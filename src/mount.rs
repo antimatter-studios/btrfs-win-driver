@@ -317,8 +317,11 @@ mod winfsp_adapter {
     use windows::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
     };
+    // WideNameInfo is the trait that gives DirInfo its reset, set_name,
+    // append_to_buffer and finalize_buffer.
     use winfsp::filesystem::{
         DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo, VolumeInfo,
+        WideNameInfo,
     };
     use winfsp::host::{FileSystemHost, FineGuard, VolumeParams};
     use winfsp::Result as FspResult;
