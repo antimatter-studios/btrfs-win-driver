@@ -2,12 +2,12 @@
 name = "btrfs-win-driver"
 version = "0.1.0"
 edition = "2021"
-# GPL-3.0, inherited from what the executable links: `winfsp-fs-skeleton`
+# GPL-3.0-or-later, inherited from what the executable links: `winfsp-fs-skeleton`
 # always and, with `mount`, the WinFsp Rust bindings (`winfsp`,
 # `winfsp-sys`), all GPL-3.0. The repository is licensed as the program it
 # builds, as ext4-, xfs- and erofs-win-driver are, so the distribution unit
 # carries a single licence.
-license = "GPL-3.0"
+license = "GPL-3.0-or-later"
 description = "Read-only Btrfs driver for Windows, in user mode, built on WinFsp."
 repository = "https://github.com/antimatter-studios/btrfs-win-driver"
 

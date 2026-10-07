@@ -7,11 +7,11 @@ written before it is tagged, and the GitHub release's notes are that section.
 
 ### Changed
 
-- **The repository is GPL-3.0, the licence of the program it builds.** It
+- **The repository is GPL-3.0-or-later, the licence of the program it builds.** It
   was MIT, but the executable links winfsp-fs-skeleton and the WinFsp Rust
   bindings, both GPL-3.0, so what users install is GPL-3.0; the LICENSE,
   `Cargo.toml`, README and winget manifest now say so, as they do for the
-  ext4, xfs and erofs drivers.
+  ext4, xfs and erofs drivers and winfsp-fs-skeleton.
 
 ### Added
 

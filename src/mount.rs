@@ -432,7 +432,7 @@ mod winfsp_adapter {
     //!
     //! License posture: this module is the only place that links against
     //! the GPL-3.0 winfsp-rs crate, which is why this repository, like the
-    //! program it builds, is GPL-3.0 (rust-fs-btrfs underneath stays MIT).
+    //! program it builds, is GPL-3.0-or-later (rust-fs-btrfs underneath stays MIT).
 
     use anyhow::{anyhow, Context, Result};
     use std::ffi::c_void;

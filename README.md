@@ -125,7 +125,7 @@ No release yet.
 
 ## Licence
 
-GPL-3.0 ([LICENSE](LICENSE)), inherited from what the executable links:
+GPL-3.0-or-later ([LICENSE](LICENSE)), inherited from what the executable links:
 winfsp-fs-skeleton in every build and, with `--features mount`, the WinFsp
 Rust bindings ([winfsp-rs](https://github.com/antimatter-studios/winfsp-rs)),
 both GPL-3.0. The repository carries the licence of the program it builds,
