@@ -6,8 +6,9 @@ Mount and read **Btrfs** volumes on Windows, as drive letters, through
 
 The driver runs in **user mode**. A fault in it takes down the mount, not
 Windows, which is the trade against a kernel driver: it is slower, and it
-cannot crash the machine. It mounts **read-only**, which is what you want
-when the reason you are reading a Linux disk on Windows is to get data off it.
+cannot crash the machine. It mounts **read-only** unless asked otherwise,
+which is what you want when the reason you are reading a Linux disk on Windows
+is to get data off it.
 
 The Windows plumbing -- the SCM service, the disk-arrival watcher,
 WinFsp.Launcher integration, the partition-table walker, raw-device I/O and the
@@ -18,7 +19,8 @@ This repository supplies the Btrfs part: the superblock probe, the WinFsp
 
 ## Status
 
-Read-only, and tested against real filesystems. First release pending.
+Read-only by default, with in-place overwrites of `nodatacow` files on request,
+and tested against real filesystems. First release pending.
 
 - `btrfs info`, `ls` and `cat` read an image or device from the command line,
   on Windows, Linux or macOS.
@@ -30,12 +32,19 @@ Read-only, and tested against real filesystems. First release pending.
   Btrfs uses is verified by the reader.
 - The ranged-read path serves exactly the window Windows asks for, so a
   sequential read of a large file costs its size once.
+- **`--rw` overwrites `nodatacow` files in place**, and nothing else. A file
+  the kernel marked `nodatacow` (`chattr +C`, as VM images and database files
+  often are) in the default subvolume can have bytes inside its current
+  size overwritten, through the mount or with `btrfs write`. Every other file
+  carries the read-only attribute, and opening it for writing is refused at
+  the open, not later by Windows' lazy writer.
 
 Not yet:
 
-- **Writes.** rust-fs-btrfs can overwrite bytes in place in a `nodatacow`
-  file and copy-on-write a `nodatasum` one; it cannot yet create, grow, rename
-  or delete. A writable mount limited to that is the next step.
+- **Any other write.** Creating, growing, truncating, renaming and deleting,
+  and writing an ordinary copy-on-write file, a file in another subvolume or
+  one a snapshot shares, are all refused. Timestamps are not updated by an
+  in-place write.
 - **Auto-mount.** The `BtrfsWatcher` service and `btrfs watch` come from the
   skeleton, which recognises a filesystem by its first 4 KiB. Btrfs's magic is
   64 KiB in, so a plugged-in Btrfs disk is not recognised; mount it by hand.
@@ -50,11 +59,15 @@ Not yet:
 btrfs info  <image> [--part N]           # label, UUID, sizes, checksum, devices
 btrfs ls    <image> [path] [--part N]    # one directory, crossing into subvolumes
 btrfs cat   <image> <path> [--part N]    # a regular file's bytes, to stdout
-btrfs mount <image> --drive X: [--part N]
+btrfs write <image> <path> [--offset N] [--part N] < bytes   # overwrite in place
+btrfs mount <image> --drive X: [--part N] [--rw]
 ```
 
 `mount` needs Windows with WinFsp installed and a build with
-`--features mount`. It blocks until Ctrl-C, which unmounts. `<image>` may be a
+`--features mount`. It blocks until Ctrl-C, which unmounts. With `--rw` the
+volume is writable only as far as the in-place overwrite reaches; without it,
+nothing is written. `write` makes the same overwrite from the command line,
+and says why when it refuses. `<image>` may be a
 raw device: `\\.\PhysicalDrive2`, `\\.\X:` and `\\?\STORAGE#Disk#...` are read
 with sector-aligned I/O, so 4Kn drives work.
 
@@ -88,11 +101,12 @@ Three layers, all in CI:
 |---|---|---|
 | unit and text checks | `cargo test` | the code, and the workflows read as text |
 | the read paths | `cargo test --features fixtures` | a Btrfs image `mkfs.btrfs` made and the Linux kernel populated |
-| the mount | `test-matrix.json` through fs-windows-test-harness | that image, mounted through WinFsp on a Windows runner |
+| the in-place write | `scripts/oracle-write.sh` | that image after the driver's writes: `btrfs check`, and the kernel reading the file back |
+| the mount | `test-matrix.json` through fs-windows-test-harness | that image, mounted through WinFsp on a Windows runner, read-only and with `--rw` |
 
 The image is built by `scripts/build-fixtures.sh` (Linux, root, btrfs-progs):
-inline, empty, multi-extent and compressed files, a 200-entry directory,
-symlinks, a non-ASCII name, a subvolume and a read-only snapshot. An image
+inline, empty, multi-extent, compressed and `nodatacow` files, a 200-entry
+directory, symlinks, a non-ASCII name, a subvolume and a read-only snapshot. An image
 this repository built itself would share the driver's reading of the format,
 so the oracle is the kernel's own writes. A fixture test with no image fails
 rather than skipping; both the fixture job and the matrix hold their runs to a

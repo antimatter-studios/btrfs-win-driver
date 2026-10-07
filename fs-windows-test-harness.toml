@@ -78,6 +78,16 @@ host = "vm"
 command = "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '{vm.harness_root}/scripts/vm/win-cat-via-mount.ps1' -BinaryCmd '{vm.workdir}/target/release/btrfs.exe mount {vm.workdir}/{scenario.image} --drive {step.drive}: {step.extra?}' -ReadyLine 'btrfs mounted at' -Drive '{step.drive}' -Path '{step.path}' -ExpectContent '{step.expect_content?}' -ExpectSize '{step.expect_size?}' -ExpectSha256 '{step.expect_sha256?}'"
 expect_exit = 0
 
+# This repository's op, not the harness's: it opens an existing file
+# without truncating it and overwrites bytes inside it, the one write the
+# driver makes. The harness's win-write.ps1 replaces a file, which the
+# in-place path refuses by design. `{step.expect}` is `written` or
+# `refused`; `{step.extra?}` carries `--rw`.
+[ops.win-overwrite-via-mount]
+host = "vm"
+command = "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File '{vm.workdir}/scripts/vm/win-overwrite-via-mount.ps1' -HarnessRoot '{vm.harness_root}' -BinaryCmd '{vm.workdir}/target/release/btrfs.exe mount {vm.workdir}/{scenario.image} --drive {step.drive}: {step.extra?}' -ReadyLine 'btrfs mounted at' -Drive '{step.drive}' -Path '{step.path}' -Offset '{step.offset}' -Content '{step.content}' -Expect '{step.expect}'"
+expect_exit = 0
+
 [mount]
 command    = "{binary} mount {image} --drive {drive} {extra}"
 ready_line = "btrfs mounted at"

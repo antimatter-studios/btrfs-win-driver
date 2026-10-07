@@ -24,7 +24,7 @@ impl FsBackend for BtrfsBackend {
 #[derive(Parser)]
 #[command(
     name = "btrfs",
-    about = "Browse Btrfs volumes, and mount them read-only on Windows through WinFsp"
+    about = "Browse Btrfs volumes, and mount them on Windows through WinFsp"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -57,19 +57,38 @@ enum Cmd {
         img: ImgArg,
         path: String,
     },
+    /// Overwrite bytes of an existing file in place, from stdin.
+    ///
+    /// Only what rust-fs-btrfs can write: a `nodatacow` file of the default
+    /// subvolume, inside its current size, on unshared, uncompressed,
+    /// allocated extents. Anything else is refused with the reason.
+    Write {
+        #[command(flatten)]
+        img: ImgArg,
+        path: String,
+        /// Byte offset in the file to write at.
+        #[arg(long, default_value_t = 0)]
+        offset: u64,
+    },
     /// Foreground auto-mount watcher (development).
     Watch,
     /// SCM service variant -- started by `sc start BtrfsWatcher`.
     #[cfg(windows)]
     Service,
-    /// Mount a volume read-only on a drive letter through WinFsp. Blocks
-    /// until Ctrl-C. Needs Windows and a build with `--features mount`.
+    /// Mount a volume on a drive letter through WinFsp, read-only unless
+    /// `--rw`. Blocks until Ctrl-C. Needs Windows and a build with
+    /// `--features mount`.
     Mount {
         disk: String,
         #[arg(long)]
         drive: String,
         #[arg(long)]
         part: Option<usize>,
+        /// Accept in-place overwrites of `nodatacow` files, the only
+        /// writes rust-fs-btrfs makes. Creating, growing, truncating,
+        /// renaming and deleting are still refused.
+        #[arg(long)]
+        rw: bool,
     },
 }
 
@@ -137,17 +156,44 @@ fn cmd_cat(img: &ImgArg, path: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_write(img: &ImgArg, path: &str, offset: u64) -> Result<()> {
+    use std::io::Read;
+    let mut data = Vec::new();
+    std::io::stdin().read_to_end(&mut data)?;
+    let m = mount::Mount::open_rw(&img.image, img.part)
+        .with_context(|| format!("opening {} for writing", img.image.display()))?;
+    let target = m
+        .resolve(path.as_bytes())
+        .map_err(|e| anyhow!("lookup {path}: {e}"))?;
+    let n = m
+        .write_in_place(&target, offset, &data)
+        .map_err(|e| anyhow!("write {path} at {offset}: {e}"))?;
+    println!("wrote {n} bytes to {path} at {offset}");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Info(a) => cmd_info(&a),
         Cmd::Ls { img, path } => cmd_ls(&img, &path),
         Cmd::Cat { img, path } => cmd_cat(&img, &path),
+        Cmd::Write { img, path, offset } => cmd_write(&img, &path, offset),
         Cmd::Watch => winfsp_fs_skeleton::watch::run::<BtrfsBackend>(),
         #[cfg(windows)]
         Cmd::Service => winfsp_fs_skeleton::service::run::<BtrfsBackend>(),
-        Cmd::Mount { disk, drive, part } => {
-            let m = mount::Mount::open(&PathBuf::from(&disk), part)
-                .with_context(|| format!("opening Btrfs on {disk}"))?;
+        Cmd::Mount {
+            disk,
+            drive,
+            part,
+            rw,
+        } => {
+            let path = PathBuf::from(&disk);
+            let m = if rw {
+                mount::Mount::open_rw(&path, part)
+            } else {
+                mount::Mount::open(&path, part)
+            }
+            .with_context(|| format!("opening Btrfs on {disk}"))?;
             m.run(&drive)
         }
     }

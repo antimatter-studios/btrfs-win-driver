@@ -47,6 +47,7 @@ fn the_root_lists_every_entry_and_nothing_else() {
         "link-to-small",
         "manyentries",
         "naïve-café.txt",
+        "nocow",
         "pattern.bin",
         "small.txt",
         "snap",

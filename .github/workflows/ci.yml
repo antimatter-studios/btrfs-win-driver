@@ -158,11 +158,25 @@ jobs:
           mkdir -p tmp/logs
           cargo test --locked --no-default-features --features fixtures 2>&1 | tee tmp/logs/fixtures-all.log
           cargo test --locked --no-default-features --features fixtures --test mount_reads 2>&1 | tee tmp/logs/fixtures.log
+          cargo test --locked --no-default-features --features fixtures --test write_in_place 2>&1 | tee tmp/logs/fixtures-write.log
 
       # A run that stops early reports no failures, so only a count tells it
       # from a pass: every fixture test executed and passed.
       - name: every fixture test executed
-        run: bash scripts/matrix-floor.sh tmp/logs/fixtures.log 15
+        run: |
+          set -euo pipefail
+          bash scripts/matrix-floor.sh tmp/logs/fixtures.log 15
+          bash scripts/matrix-floor.sh tmp/logs/fixtures-write.log 6
+
+      # The write tests above read back through the driver, so they prove
+      # only that it agrees with itself. These judges are independent of
+      # it: btrfs check on the image after the driver's writes, and the
+      # kernel mounting it and reading the file back.
+      - name: btrfs check and the kernel judge the driver's writes
+        run: |
+          set -euo pipefail
+          cargo build --locked --no-default-features --bin btrfs
+          sudo scripts/oracle-write.sh target/debug/btrfs .fixtures/btrfs-content.img
 
   # The half that only exists on Windows, and the reason this file is
   # worth its runtime.
