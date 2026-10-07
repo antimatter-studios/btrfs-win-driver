@@ -7,7 +7,7 @@ PublisherUrl: https://github.com/antimatter-studios
 PublisherSupportUrl: https://github.com/antimatter-studios/btrfs-win-driver/issues
 PackageName: btrfs-win-driver
 PackageUrl: https://github.com/antimatter-studios/btrfs-win-driver
-License: GPL-3.0-only (the executable links the GPL-3.0 WinFsp Rust bindings; the driver's own source is MIT)
+License: GPL-3.0-or-later
 LicenseUrl: https://github.com/antimatter-studios/btrfs-win-driver/blob/main/README.md#licence
 ShortDescription: Mount and read Btrfs volumes on Windows, in user mode, via WinFsp.
 Description: |

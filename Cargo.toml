@@ -2,12 +2,12 @@
 name = "btrfs-win-driver"
 version = "0.1.0"
 edition = "2021"
-# This crate's own source is MIT (LICENSE). The executable links
-# `winfsp-fs-skeleton` always and, with `mount`, the WinFsp Rust bindings
-# (`winfsp`, `winfsp-sys`), all GPL-3.0, so a built binary is distributed
-# under GPL-3.0 as a whole. MIT code flows into a GPL-3.0 work, so the two
-# do not conflict; the README's Licence section states the distinction.
-license = "MIT"
+# GPL-3.0-or-later, inherited from what the executable links: `winfsp-fs-skeleton`
+# always and, with `mount`, the WinFsp Rust bindings (`winfsp`,
+# `winfsp-sys`), all GPL-3.0. The repository is licensed as the program it
+# builds, as ext4-, xfs- and erofs-win-driver are, so the distribution unit
+# carries a single licence.
+license = "GPL-3.0-or-later"
 description = "Read-only Btrfs driver for Windows, in user mode, built on WinFsp."
 repository = "https://github.com/antimatter-studios/btrfs-win-driver"
 
