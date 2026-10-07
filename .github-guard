@@ -1,0 +1,20 @@
+# .github-guard — declarations github-guard reads (see the github-guard skill:
+# https://github.com/antimatter-studios/agent-skills/blob/main/.claude/skills/github-guard/README.md).
+# git-config format: check with `git config -f .github-guard --list`, and
+# double-quote any value containing # or ;.
+
+# What must pass before main takes a merge. Read from the default branch on
+# the server, never from a checkout, so a branch cannot change its own gate.
+#
+# The four check runs ci.yml produces itself, and the two from the matrix,
+# which ci.yml calls as the reusable matrix.yml: a called workflow's jobs
+# report as "<caller job> / <job name>". Declared rather than discovered, so
+# a job renamed or moved is a reviewed edit here rather than a required
+# check nothing reports any more.
+[checks]
+	required = check (ubuntu-latest, no Windows features)
+	required = check (macos-latest, no Windows features)
+	required = check (windows, mount + service)
+	required = test against a real Btrfs filesystem
+	required = matrix / Btrfs image for the matrix
+	required = "matrix / matrix (windows, WinFsp, test-matrix.json)"

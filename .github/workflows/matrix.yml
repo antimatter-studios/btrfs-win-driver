@@ -1,0 +1,281 @@
+# THE WINDOWS MATRIX, as one reusable workflow.
+#
+# test-matrix.json, run by fs-windows-test-harness against a real WinFsp
+# mount. ci.yml calls it with no installer: the driver is built from this
+# commit. release.yml calls it with the name of the artifact holding the
+# installers it just built: that installer is installed silently, the
+# matrix runs against the btrfs.exe it installed, and the driver is then
+# uninstalled and checked gone. So a release is published only once the
+# driver a user gets has mounted every scenario's image, and leaves
+# nothing behind when removed.
+name: matrix
+
+on:
+  workflow_call:
+    inputs:
+      installer:
+        description: >-
+          The artifact holding the x64 Setup.exe to install and test. Empty:
+          build the driver from the checkout instead.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # THE MATRIX: test-matrix.json, run by fs-windows-test-harness against
+  # a real WinFsp mount on a hosted Windows runner.
+  #
+  # The image comes first, from Linux: mkfs.btrfs and a loop mount to populate
+  # it need both, and a Windows runner has neither.
+  matrix-images:
+    name: Btrfs image for the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: install btrfs-progs
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq btrfs-progs
+      - name: build the image every scenario uses
+        run: sudo scripts/build-fixtures.sh btrfs-images
+      - uses: actions/upload-artifact@v4
+        with:
+          name: btrfs-matrix-images
+          path: btrfs-images/btrfs-content.img
+          if-no-files-found: error
+          retention-days: 3
+
+  # The runner is its own "Windows VM": sshd on localhost, key auth,
+  # PowerShell as its default shell -- ext4-win-driver's arrangement. The
+  # driver is built in place and the run is --no-ship.
+  matrix:
+    name: matrix (windows, WinFsp, test-matrix.json)
+    runs-on: windows-latest
+    needs: [matrix-images]
+    timeout-minutes: 60
+    env:
+      LLVM_MINGW_VER: 20260421
+    steps:
+      - uses: actions/checkout@v4
+        # No submodules; winfsp-rs is a sibling like everything else,
+        # and the header patch below reaches into that checkout.
+
+      - name: check out sibling repos
+        # chore publishes darwin and linux builds only, and `uname -s`
+        # under Git Bash reports MINGW64_NT-*, so there is nothing to
+        # install here. Cloning directly restates what `chore siblings`
+        # does — which is the duplication chores.yml exists to remove —
+        # so it reads the refs OUT OF chores.yml rather than hardcoding
+        # them, and the single declaration still holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+          # URL as well as ref. The family is not all in one org, so
+          # reconstructing a URL from the repo name silently points at a
+          # repo that does not exist -- and git then prompts for
+          # credentials, so the run dies with "could not read Username",
+          # which reads as an auth problem rather than a wrong URL.
+          printf '%s\t%s\t%s\n' \
+            rust-fs-core       "$(pin FS_CORE_URL)" "$(pin FS_CORE_REF)" \
+            rust-fs-btrfs      "$(pin FS_BTRFS_URL)" "$(pin FS_BTRFS_REF)" \
+            winfsp-fs-skeleton "$(pin SKELETON_URL)" "$(pin SKELETON_REF)" \
+            fs-windows-test-harness "$(pin HARNESS_URL)" "$(pin HARNESS_REF)" \
+            winfsp-rs          "$(pin WINFSP_RS_URL)" "$(pin WINFSP_RS_REF)" \
+          | while IFS="$(printf '\t')" read -r name url ref; do
+              echo "cloning $name at $ref"
+              # init + fetch-by-ref, not clone. winfsp-rs is pinned to a
+              # bare commit that no published branch contains, so a
+              # plain clone does not have it and `--branch` cannot name
+              # it. Asking the server for the SHA directly does work.
+              git init --quiet "../$name"
+              git -C "../$name" remote add origin "$url"
+              git -C "../$name" fetch --quiet --depth 1 origin "$ref"
+              git -C "../$name" checkout --quiet FETCH_HEAD
+            done
+
+      - name: install Rust + gnullvm target
+        shell: pwsh
+        run: |
+          rustup install stable
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnullvm
+          rustc --version
+
+      - name: install LLVM-MinGW (gnullvm toolchain)
+        shell: pwsh
+        run: |
+          # Provides the gnullvm runtime + sysroot. Its standalone
+          # release zip does NOT ship libclang.dll, so libclang for
+          # bindgen comes from the separate step below.
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VER }}/llvm-mingw-${{ env.LLVM_MINGW_VER }}-ucrt-x86_64.zip"
+          $zip = "$env:RUNNER_TEMP\llvm-mingw.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\llvm-mingw" -Force
+          $extracted = Get-ChildItem "$env:RUNNER_TEMP\llvm-mingw" -Directory | Select-Object -First 1
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $extracted.FullName 'bin')
+
+      - name: install LLVM (libclang for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          # Pinned to 18.1 for the same reason release.yml pins it: old
+          # enough to parse LLVM-MinGW's clang-22 sysroot headers
+          # without the AVX-512 self-compile errors a same-version
+          # libclang trips on.
+          version: '18.1'
+          directory: ${{ runner.temp }}/llvm
+
+      - name: install WinFsp (build-time headers + libs)
+        shell: pwsh
+        run: choco install winfsp --yes --no-progress
+
+      - name: patch fsctl.h for the _ReadWriteBarrier collision
+        shell: pwsh
+        run: |
+          # clang's MSVC compatibility predefines _ReadWriteBarrier as a
+          # 0-arg function-like macro via intrin.h. WinFsp's fsctl.h then
+          # forward-declares `void _ReadWriteBarrier(void);`, which the
+          # preprocessor mangles into `void ;`. `-U_ReadWriteBarrier`
+          # does not help, because intrin.h is included after it.
+          #
+          # Wrap the forward-decl in push_macro / undef / pop_macro so
+          # the macro is hidden at exactly the point the function has to
+          # be declared. Both the vendored header and the choco-installed
+          # one are patched, since which is read depends on winfsp-sys's
+          # `system` feature. Kept identical to release.yml: if these two
+          # ever disagree, CI stops predicting the release.
+          $needle = '    void _ReadWriteBarrier(void);'
+          $replacement = "#pragma push_macro(`"_ReadWriteBarrier`")`n#undef _ReadWriteBarrier`n    void _ReadWriteBarrier(void);`n#pragma pop_macro(`"_ReadWriteBarrier`")"
+          foreach ($f in @(
+            '../winfsp-rs/winfsp-sys/winfsp/inc/winfsp/fsctl.h',
+            'C:\Program Files (x86)\WinFsp\inc\winfsp\fsctl.h'
+          )) {
+            if (-not (Test-Path $f)) { "Skipping (not found): $f"; continue }
+            $content = Get-Content $f -Raw
+            Set-Content -Path $f -Value ($content -replace [regex]::Escape($needle), $replacement) -NoNewline
+            "Patched $f"
+          }
+
+      - name: make this runner its own Windows VM (sshd, key auth, PowerShell)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & "$env:ProgramFiles\Git\bin\bash.exe" -c 'mkdir -p ~/.ssh && ssh-keygen -t ed25519 -N "" -f ~/.ssh/btrfs-matrix -q'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $keys = "$env:ProgramData\ssh\administrators_authorized_keys"
+          Get-Content "$env:USERPROFILE\.ssh\btrfs-matrix.pub" | Set-Content -Encoding ascii $keys
+          icacls $keys /inheritance:r /grant 'Administrators:F' /grant 'SYSTEM:F' | Out-Null
+          New-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell `
+            -Value "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -PropertyType String -Force | Out-Null
+          # An SSH session gets the machine environment sshd started with:
+          # WinFsp's bin directory goes on the machine PATH first, so the
+          # driver's delay-loaded winfsp DLL resolves in the mount steps.
+          $winfspBin = Join-Path ${env:ProgramFiles(x86)} 'WinFsp\bin'
+          $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+          [Environment]::SetEnvironmentVariable('Path', "$machinePath;$winfspBin", 'Machine')
+          Restart-Service sshd
+
+      - name: build the driver (mount) where the ops look for it
+        if: inputs.installer == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --features mount --target x86_64-pc-windows-gnullvm
+          mkdir -p target/release
+          cp target/x86_64-pc-windows-gnullvm/release/btrfs.exe target/release/btrfs.exe
+          cp target/x86_64-pc-windows-gnullvm/release/btrfs.exe target/release/btrfs-host.exe
+
+      # GIVEN AN INSTALLER, the matrix runs the driver a user gets: the
+      # installer the release just built is installed silently, as winget's
+      # validation installs it, and the btrfs.exe it put in Program Files is
+      # the one every op and verifier runs. Nothing is built from source.
+      - name: the installer under test
+        if: inputs.installer != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.installer }}
+          path: dist
+
+      - name: install it silently, and run the installed driver
+        if: inputs.installer != ''
+        shell: pwsh
+        env:
+          INSTALLER: ${{ inputs.installer }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem 'dist\btrfs-win-driver-*-x64-Setup.exe' | Select-Object -First 1).FullName
+          if (-not $setup) { throw "the artifact $env:INSTALLER holds no x64 Setup.exe" }
+          installer\verify-silent.ps1 -SetupPath $setup
+          $installed = Join-Path $env:ProgramFiles 'btrfs-win-driver\btrfs.exe'
+          if (-not (Test-Path $installed)) { throw "the installer did not put btrfs.exe at $installed" }
+          New-Item -ItemType Directory -Force target\release | Out-Null
+          Copy-Item $installed target\release\btrfs.exe -Force
+          Copy-Item $installed target\release\btrfs-host.exe -Force
+          Write-Host "the matrix runs $installed"
+
+      - name: the host verifiers' btrfs runs with Git Bash path conversion off
+        # The verifiers run `target/release/btrfs ls IMAGE /dir` from Git Bash,
+        # which rewrites a POSIX-looking argument before a native program
+        # sees it. `target/release/btrfs` is a script (bash runs a file named
+        # exactly `btrfs` before btrfs.exe) that turns that off for this one
+        # program. Written from PowerShell and calling btrfs-host.exe: Git
+        # Bash treats `btrfs` and `btrfs.exe` as one file, so a redirect to it
+        # would overwrite the binary (measured in ext4-win-driver).
+        shell: pwsh
+        run: |
+          $shim = "#!/usr/bin/env bash`nMSYS2_ARG_CONV_EXCL='*' exec `"`$(dirname `"`$0`")/btrfs-host.exe`" `"`$@`"`n"
+          [IO.File]::WriteAllText("$PWD\target\release\btrfs", $shim)
+
+      - name: build the harness runner
+        shell: bash
+        run: cargo build --quiet --manifest-path ../fs-windows-test-harness/runner/Cargo.toml --release --bin run-matrix
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: btrfs-matrix-images
+          path: btrfs-images
+
+      - name: the matrix
+        timeout-minutes: 30
+        shell: bash
+        env:
+          BTRFS_PREBUILT_IMAGES: ${{ github.workspace }}/btrfs-images
+        run: |
+          set -euo pipefail
+          export BTRFS_PREBUILT_IMAGES="$(cygpath -u "$BTRFS_PREBUILT_IMAGES")"
+          mkdir -p tmp/logs
+          bash scripts/run-matrix.sh \
+            --vm-host=runneradmin@localhost \
+            --ssh-key="$(cygpath -m ~/.ssh/btrfs-matrix)" \
+            --vm-workdir="$(cygpath -m "$PWD")" \
+            --no-ship 2>&1 | tee tmp/logs/matrix.log
+
+      - name: every scenario executed
+        shell: bash
+        run: bash scripts/matrix-floor.sh tmp/logs/matrix.log 17
+
+      - name: uninstall it silently, and check nothing is left behind
+        if: inputs.installer != ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem 'dist\btrfs-win-driver-*-x64-Setup.exe' | Select-Object -First 1).FullName
+          installer\verify-uninstall.ps1 -SetupPath $setup
+
+      - name: upload matrix logs and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-logs-and-diagnostics
+          path: |
+            tmp/logs/
+            test-diagnostics/
+            dist/*.log
+          if-no-files-found: warn
