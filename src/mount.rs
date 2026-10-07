@@ -1,0 +1,577 @@
+//! Btrfs mount handle and (with the `mount` feature) the WinFsp adapter.
+//!
+//! [`Mount`] opens a Btrfs volume -- an image file or, on Windows, a raw
+//! device such as `\\.\PhysicalDriveN` -- optionally inside one partition
+//! of a whole-disk image. Everything a WinFsp callback needs to answer is
+//! a method here, written portably, so the tests in `tests/` exercise it
+//! against real filesystems on Linux; the adapter at the bottom of the
+//! file only translates those answers into WinFsp's types.
+//!
+//! **Read-only.** The volume is opened with `Filesystem::mount`, which
+//! cannot write, and WinFsp's `read_only_volume` flag is set, so the
+//! cache manager refuses writes before any callback sees them. Every
+//! mutating callback is left at the trait's default refusal.
+//!
+//! **Subvolumes are crossed.** A Btrfs directory entry can name another
+//! subvolume's tree rather than an inode. Paths resolve through
+//! `Filesystem::resolve_path_bytes`, which follows the kernel's rule for
+//! crossing into one, so a subvolume or snapshot appears as the directory
+//! it is under Linux and its contents are readable through it.
+
+use anyhow::{anyhow, bail, Context, Result};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use fs_btrfs::inode::Inode;
+use fs_btrfs::subvol::{PathTarget, EMPTY_SUBVOL_DIR_OBJECTID};
+use fs_btrfs::Filesystem;
+use fs_core::BlockRead;
+use winfsp_fs_skeleton::device::{BlockSource, FileSource};
+use winfsp_fs_skeleton::partition;
+
+/// A `BlockRead` over a `BlockSource` (sector-aligned raw-disk reads on
+/// Windows, plain `pread` elsewhere), offset by `base` so the reader can
+/// be handed one partition of a disk without knowing about the rest, and
+/// reporting `len` as the device's size so a read past the partition's
+/// end is refused rather than served from the next partition.
+struct PartitionDevice {
+    src: Arc<dyn BlockSource>,
+    base: u64,
+    len: u64,
+}
+
+impl BlockRead for PartitionDevice {
+    fn read_at(&self, offset: u64, buf: &mut [u8]) -> fs_core::Result<()> {
+        let end = offset
+            .checked_add(buf.len() as u64)
+            .ok_or(fs_core::Error::ShortRead {
+                offset,
+                want: buf.len(),
+                got: 0,
+            })?;
+        if end > self.len {
+            return Err(fs_core::Error::ShortRead {
+                offset,
+                want: buf.len(),
+                got: self.len.saturating_sub(offset) as usize,
+            });
+        }
+        self.src
+            .read_at(self.base + offset, buf)
+            .map_err(fs_core::Error::Io)
+    }
+
+    fn size_bytes(&self) -> u64 {
+        self.len
+    }
+}
+
+/// One entry of a directory listing: its name as stored, the inode it
+/// resolves to (in whichever tree it lives), and whether reaching it
+/// crossed into another subvolume.
+pub struct Child {
+    /// The name exactly as stored. Btrfs names are bytes with no
+    /// encoding rule; the WinFsp adapter skips one that is not UTF-8,
+    /// because Windows cannot be handed it.
+    pub name: Vec<u8>,
+    pub inode: Inode,
+    pub subvolume: bool,
+}
+
+/// An opened Btrfs volume.
+pub struct Mount {
+    /// The volume, opened on its default subvolume's tree.
+    pub fs: Filesystem,
+    /// Original image path, kept for diagnostic messages.
+    #[allow(dead_code)]
+    image: PathBuf,
+}
+
+impl Mount {
+    /// Open a Btrfs volume. `partition` selects a 1-indexed partition in
+    /// a whole-disk image; `None` or `Some(0)` means "treat `image` as
+    /// the volume directly".
+    ///
+    /// `Some(0)` is accepted as "no partition" because the auto-mount
+    /// launcher passes `--part 0` unconditionally, through a fixed
+    /// command line, for a disk with no partition table.
+    pub fn open(image: &Path, partition: Option<usize>) -> Result<Self> {
+        match partition {
+            None | Some(0) => Self::open_direct(image),
+            Some(n) => Self::open_partition(image, n),
+        }
+    }
+
+    /// Open the image as a single, unpartitioned Btrfs volume.
+    pub fn open_direct(image: &Path) -> Result<Self> {
+        let src: Arc<dyn BlockSource> = Arc::new(FileSource::open(image)?);
+        let len = src.size();
+        let dev: Arc<dyn BlockRead> = Arc::new(PartitionDevice { src, base: 0, len });
+        let fs = Filesystem::mount(dev).map_err(|e| {
+            anyhow!(
+                "open Btrfs at {}: {e}{}",
+                image.display(),
+                partition_hint(image)
+            )
+        })?;
+        Ok(Self {
+            fs,
+            image: image.to_path_buf(),
+        })
+    }
+
+    /// Open the Nth partition (1-indexed) inside `image` as a Btrfs
+    /// volume, after checking the partition lies inside the device.
+    pub fn open_partition(image: &Path, n: usize) -> Result<Self> {
+        let src: Arc<dyn BlockSource> = Arc::new(FileSource::open(image)?);
+        let parts = partition::list_from_source(src.as_ref())
+            .with_context(|| format!("listing partitions in {}", image.display()))?;
+        if parts.is_empty() {
+            bail!("no partitions found in {}", image.display());
+        }
+        if n == 0 || n > parts.len() {
+            bail!("--part {n} out of range (1..={})", parts.len());
+        }
+        let p = &parts[n - 1];
+        let base = p.start_lba * 512;
+        let len = p.num_sectors * 512;
+        let end = base
+            .checked_add(len)
+            .ok_or_else(|| anyhow!("partition geometry overflows u64"))?;
+        if end > src.size() {
+            bail!(
+                "partition {n} extends past device end: {end} > {} bytes",
+                src.size()
+            );
+        }
+        let dev: Arc<dyn BlockRead> = Arc::new(PartitionDevice { src, base, len });
+        let fs = Filesystem::mount(dev).map_err(|e| {
+            anyhow!(
+                "open Btrfs at {} partition {n} ({}): {e}",
+                image.display(),
+                p.kind
+            )
+        })?;
+        Ok(Self {
+            fs,
+            image: image.to_path_buf(),
+        })
+    }
+
+    /// Resolve a `/`-separated path, crossing into subvolumes. The
+    /// returned target names the tree its inode belongs to; read it
+    /// through `target.fs(&mount.fs)`.
+    pub fn resolve(&self, path: &[u8]) -> fs_btrfs::Result<PathTarget> {
+        self.fs.resolve_path_bytes(path)
+    }
+
+    /// The entries of the directory at `path`, `.` and `..` excluded,
+    /// each with its inode read from the tree it lives in. An entry that
+    /// names a subvolume is followed into it, so it carries that
+    /// subvolume's top directory, as the kernel shows it.
+    pub fn children(&self, path: &[u8]) -> fs_btrfs::Result<Vec<Child>> {
+        let target = self.resolve(path)?;
+        if !target.inode.is_dir() {
+            return Err(fs_btrfs::Error::NotADirectory);
+        }
+        // The kernel's stand-in for a subvolume nothing references (a
+        // snapshot's copy of a nested subvolume): an empty directory.
+        if target.inode.ino == EMPTY_SUBVOL_DIR_OBJECTID {
+            return Ok(Vec::new());
+        }
+        let tree = target.fs(&self.fs);
+        let mut out = Vec::new();
+        for entry in tree.read_dir(target.inode.ino)? {
+            if entry.is_inode() {
+                let inode = tree.read_inode(entry.ino)?;
+                out.push(Child {
+                    name: entry.name,
+                    inode,
+                    subvolume: false,
+                });
+            } else {
+                let child = join(path, &entry.name);
+                let inode = self.resolve(&child)?.inode;
+                out.push(Child {
+                    name: entry.name,
+                    inode,
+                    subvolume: true,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Read `buf.len()` bytes of the regular file `target` at `offset`.
+    /// Returns how many were read; fewer than asked means end of file.
+    pub fn read_at(
+        &self,
+        target: &PathTarget,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> fs_btrfs::Result<usize> {
+        target.fs(&self.fs).read_at(target.inode.ino, offset, buf)
+    }
+
+    /// A regular file's whole content.
+    pub fn read_path(&self, path: &str) -> fs_btrfs::Result<Vec<u8>> {
+        let target = self.resolve(path.as_bytes())?;
+        if !target.inode.is_regular_file() {
+            return Err(fs_btrfs::Error::NotAFile);
+        }
+        target.fs(&self.fs).read_file(target.inode.ino)
+    }
+
+    /// The volume's size and free space in bytes, as the superblock
+    /// records them: `total_bytes`, and what of it `bytes_used` leaves.
+    pub fn volume_totals(&self) -> (u64, u64) {
+        let sb = self.fs.superblock();
+        (sb.total_bytes, sb.total_bytes.saturating_sub(sb.bytes_used))
+    }
+
+    /// The volume label, or `btrfs` when it has none: Explorer shows an
+    /// empty label as "Local Disk", which says nothing about the volume.
+    pub fn label(&self) -> String {
+        let label = self.fs.superblock().label.trim_end_matches('\0');
+        if label.is_empty() {
+            "btrfs".to_string()
+        } else {
+            label.to_string()
+        }
+    }
+
+    /// Mount this filesystem on a Windows drive letter or empty
+    /// directory, read-only. Blocks until Ctrl-C.
+    ///
+    /// Off Windows, or without the `mount` feature, prints why it cannot
+    /// and returns an error, so a script that expected a mount does not
+    /// carry on as though it had one.
+    pub fn run(self, mount_point: &str) -> Result<()> {
+        run_impl(self, mount_point)
+    }
+}
+
+/// `dir` and `name` joined with one `/`.
+fn join(dir: &[u8], name: &[u8]) -> Vec<u8> {
+    let mut out = dir.to_vec();
+    if !out.ends_with(b"/") {
+        out.push(b'/');
+    }
+    out.extend_from_slice(name);
+    out
+}
+
+#[cfg(not(all(windows, feature = "mount")))]
+fn run_impl(_mount: Mount, _mount_point: &str) -> Result<()> {
+    bail!("btrfs: a WinFsp mount needs Windows and a build with --features mount")
+}
+
+#[cfg(all(windows, feature = "mount"))]
+fn run_impl(mount: Mount, mount_point: &str) -> Result<()> {
+    winfsp_adapter::run(mount, mount_point)
+}
+
+fn partition_hint(image: &Path) -> String {
+    match partition::list(image) {
+        Ok(parts) if !parts.is_empty() => {
+            let mut s =
+                String::from("\nhint: this looks like a partitioned device. Try --part N:\n");
+            for (i, p) in parts.iter().enumerate() {
+                s.push_str(&format!(
+                    "  {}: {} sectors @ LBA {} ({})\n",
+                    i + 1,
+                    p.num_sectors,
+                    p.start_lba,
+                    p.kind,
+                ));
+            }
+            s
+        }
+        _ => String::new(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// WinFsp adapter (feature = "mount", windows only)
+// ---------------------------------------------------------------------------
+
+#[cfg(all(windows, feature = "mount"))]
+mod winfsp_adapter {
+    //! Bridge between WinFsp's `FileSystemContext` and [`Mount`].
+    //!
+    //! Path conversion: WinFsp hands over backslash-separated UTF-16
+    //! (`\foo\bar`); the reader wants slash-separated bytes (`/foo/bar`).
+    //!
+    //! License posture: this module is the only place that links against
+    //! the GPL-3.0 winfsp-rs crate. Everything else here, and all of
+    //! rust-fs-btrfs, is MIT, which flows into a GPL-3.0 binary cleanly.
+
+    use anyhow::{anyhow, Context, Result};
+    use std::ffi::c_void;
+    use widestring::U16CStr;
+    use windows::Win32::Foundation::{
+        NTSTATUS, STATUS_END_OF_FILE, STATUS_FILE_IS_A_DIRECTORY, STATUS_INVALID_DEVICE_REQUEST,
+        STATUS_NOT_A_DIRECTORY, STATUS_OBJECT_NAME_INVALID, STATUS_OBJECT_NAME_NOT_FOUND,
+        STATUS_OBJECT_PATH_NOT_FOUND,
+    };
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+    use winfsp::filesystem::{
+        DirInfo, DirMarker, FileInfo, FileSecurity, FileSystemContext, OpenFileInfo, VolumeInfo,
+    };
+    use winfsp::host::{FileSystemHost, FineGuard, VolumeParams};
+    use winfsp::Result as FspResult;
+    use winfsp_sys::FILE_ACCESS_RIGHTS;
+
+    use fs_btrfs::inode::Inode;
+    use fs_btrfs::subvol::PathTarget;
+
+    use super::Mount;
+
+    /// IO_REPARSE_TAG_SYMLINK. Symlinks are surfaced as reparse points so
+    /// Explorer shows them as links; following one is not implemented.
+    const IO_REPARSE_TAG_SYMLINK: u32 = 0xA000_000C;
+
+    use winfsp_fs_skeleton::translate::unix_to_filetime;
+
+    /// `\foo\bar` (UTF-16) to `/foo/bar` (UTF-8 bytes). Empty is the root.
+    fn winpath_to_unix(name: &U16CStr) -> FspResult<Vec<u8>> {
+        let s = name
+            .to_string()
+            .map_err(|_| winfsp::FspError::from(STATUS_OBJECT_NAME_INVALID))?;
+        if s.is_empty() {
+            return Ok(b"/".to_vec());
+        }
+        Ok(s.replace('\\', "/").into_bytes())
+    }
+
+    /// Every entry is read-only: the volume is.
+    fn file_attributes(inode: &Inode) -> u32 {
+        let mut a = FILE_ATTRIBUTE_READONLY.0;
+        if inode.is_dir() {
+            a |= FILE_ATTRIBUTE_DIRECTORY.0;
+        }
+        if inode.is_symlink() {
+            a |= FILE_ATTRIBUTE_REPARSE_POINT.0;
+        }
+        a
+    }
+
+    fn populate_file_info(inode: &Inode, info: &mut FileInfo) {
+        info.file_attributes = file_attributes(inode);
+        info.reparse_tag = if inode.is_symlink() {
+            IO_REPARSE_TAG_SYMLINK
+        } else {
+            0
+        };
+        info.file_size = if inode.is_dir() { 0 } else { inode.size };
+        // nbytes is what the file occupies on disk; zero for one stored
+        // inline in its extent item, which Windows reads as "no space".
+        info.allocation_size = inode.nbytes.max(info.file_size).next_multiple_of(4096);
+        info.creation_time = unix_to_filetime(inode.otime.sec, inode.otime.nsec);
+        info.last_access_time = unix_to_filetime(inode.atime.sec, inode.atime.nsec);
+        info.last_write_time = unix_to_filetime(inode.mtime.sec, inode.mtime.nsec);
+        info.change_time = unix_to_filetime(inode.ctime.sec, inode.ctime.nsec);
+        info.index_number = inode.ino;
+        info.hard_links = 0;
+        info.ea_size = 0;
+    }
+
+    /// A reader error as the NTSTATUS a WinFsp callback returns. Path
+    /// problems read as "not found", so Explorer treats them uniformly;
+    /// device and format errors stay distinct so they surface.
+    fn err_to_status(err: fs_btrfs::Error) -> NTSTATUS {
+        use fs_btrfs::Error as E;
+        match err {
+            E::NotFound | E::NotAFile => STATUS_OBJECT_NAME_NOT_FOUND,
+            E::NotADirectory => STATUS_OBJECT_PATH_NOT_FOUND,
+            _ => STATUS_INVALID_DEVICE_REQUEST,
+        }
+    }
+
+    /// Per-open state: the path, and the inode it resolved to with the
+    /// subvolume tree that inode belongs to.
+    pub struct BtrfsFileContext {
+        path: Vec<u8>,
+        target: PathTarget,
+    }
+
+    pub struct BtrfsContext {
+        mount: Mount,
+        label: String,
+        totals: (u64, u64),
+    }
+
+    impl BtrfsContext {
+        fn resolve(&self, path: &[u8]) -> FspResult<PathTarget> {
+            self.mount
+                .resolve(path)
+                .map_err(|e| err_to_status(e).into())
+        }
+    }
+
+    impl FileSystemContext for BtrfsContext {
+        type FileContext = BtrfsFileContext;
+
+        fn get_security_by_name(
+            &self,
+            file_name: &U16CStr,
+            _security_descriptor: Option<&mut [c_void]>,
+            _resolve_reparse: impl FnOnce(&U16CStr) -> Option<FileSecurity>,
+        ) -> FspResult<FileSecurity> {
+            let target = self.resolve(&winpath_to_unix(file_name)?)?;
+            Ok(FileSecurity {
+                reparse: false,
+                sz_security_descriptor: 0,
+                attributes: file_attributes(&target.inode),
+            })
+        }
+
+        fn open(
+            &self,
+            file_name: &U16CStr,
+            _create_options: u32,
+            _granted_access: FILE_ACCESS_RIGHTS,
+            file_info: &mut OpenFileInfo,
+        ) -> FspResult<Self::FileContext> {
+            let path = winpath_to_unix(file_name)?;
+            let target = self.resolve(&path)?;
+            populate_file_info(&target.inode, file_info.as_mut());
+            Ok(BtrfsFileContext { path, target })
+        }
+
+        fn close(&self, _context: Self::FileContext) {}
+
+        fn get_file_info(
+            &self,
+            context: &Self::FileContext,
+            file_info: &mut FileInfo,
+        ) -> FspResult<()> {
+            populate_file_info(&context.target.inode, file_info);
+            Ok(())
+        }
+
+        fn read(
+            &self,
+            context: &Self::FileContext,
+            buffer: &mut [u8],
+            offset: u64,
+        ) -> FspResult<u32> {
+            let inode = &context.target.inode;
+            if inode.is_dir() {
+                return Err(STATUS_FILE_IS_A_DIRECTORY.into());
+            }
+            if !inode.is_regular_file() {
+                return Err(STATUS_INVALID_DEVICE_REQUEST.into());
+            }
+            if offset >= inode.size {
+                return Err(STATUS_END_OF_FILE.into());
+            }
+            // The ranged read: WinFsp asks for a window and this reads
+            // exactly that window, so a sequential scan costs the file's
+            // size once rather than once per callback. Holes read as zeros.
+            let take = (buffer.len() as u64).min(inode.size - offset) as usize;
+            let n = self
+                .mount
+                .read_at(&context.target, offset, &mut buffer[..take])
+                .map_err(err_to_status)?;
+            Ok(n as u32)
+        }
+
+        fn read_directory(
+            &self,
+            context: &Self::FileContext,
+            _pattern: Option<&U16CStr>,
+            marker: DirMarker,
+            buffer: &mut [u8],
+        ) -> FspResult<u32> {
+            if !context.target.inode.is_dir() {
+                return Err(STATUS_NOT_A_DIRECTORY.into());
+            }
+            let children = self.mount.children(&context.path).map_err(err_to_status)?;
+            // WinFsp resumes a listing after the last name it was given,
+            // so the entries go out in one stable order: by name.
+            let mut named: Vec<(String, Inode)> = children
+                .into_iter()
+                .filter_map(|c| String::from_utf8(c.name).ok().map(|n| (n, c.inode)))
+                .collect();
+            named.sort_by(|a, b| a.0.cmp(&b.0));
+
+            let resume_after = marker.inner_as_cstr().map(|m| m.to_string_lossy());
+            let mut cursor: u32 = 0;
+            let mut dir_info: DirInfo<255> = DirInfo::new();
+            for (name, inode) in &named {
+                if let Some(after) = resume_after.as_deref() {
+                    if name.as_str() <= after {
+                        continue;
+                    }
+                }
+                dir_info.reset();
+                populate_file_info(inode, dir_info.file_info_mut());
+                if dir_info.set_name(name.as_str()).is_err() {
+                    continue;
+                }
+                if !dir_info.append_to_buffer(buffer, &mut cursor) {
+                    break;
+                }
+            }
+            DirInfo::<255>::finalize_buffer(buffer, &mut cursor);
+            Ok(cursor)
+        }
+
+        fn get_volume_info(&self, out_volume_info: &mut VolumeInfo) -> FspResult<()> {
+            out_volume_info.total_size = self.totals.0;
+            out_volume_info.free_size = self.totals.1;
+            out_volume_info.set_volume_label(&self.label);
+            Ok(())
+        }
+    }
+
+    /// Mount `mount` read-only on `mount_point` (a drive letter such as
+    /// `X:` or an empty directory) and block until Ctrl-C.
+    pub fn run(mount: Mount, mount_point: &str) -> Result<()> {
+        let _init = winfsp::winfsp_init().context("WinFsp not installed?")?;
+
+        let sector = mount.fs.superblock().sectorsize.min(4096) as u16;
+        let ctx = BtrfsContext {
+            label: mount.label(),
+            totals: mount.volume_totals(),
+            mount,
+        };
+
+        let mut params = VolumeParams::new();
+        params
+            .sector_size(sector)
+            .sectors_per_allocation_unit(1)
+            .max_component_length(255)
+            .file_info_timeout(1000)
+            .case_sensitive_search(true)
+            .case_preserved_names(true)
+            .unicode_on_disk(true)
+            .read_only_volume(true)
+            .filesystem_name("btrfs");
+
+        // The locking strategy is named rather than inferred: winfsp-rs
+        // carries it as a type parameter, and two impls' methods collide
+        // when it is left open (E0034 at the mount() call).
+        let mut host = FileSystemHost::<_, FineGuard>::new(params, ctx)
+            .map_err(|e| anyhow!("FileSystemHost::new failed: {e}"))?;
+        host.mount(mount_point)
+            .map_err(|e| anyhow!("mount({mount_point}) failed: {e}"))?;
+        host.start()
+            .map_err(|e| anyhow!("FileSystemHost::start failed: {e}"))?;
+
+        println!("btrfs mounted at {mount_point} (RO). Ctrl-C to unmount.");
+        let (tx, rx) = std::sync::mpsc::channel();
+        ctrlc::set_handler(move || {
+            let _ = tx.send(());
+        })
+        .ok();
+        let _ = rx.recv();
+
+        host.stop();
+        host.unmount();
+        Ok(())
+    }
+}
