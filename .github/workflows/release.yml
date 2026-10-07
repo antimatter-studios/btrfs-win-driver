@@ -1,0 +1,356 @@
+# Build + attach Setup.exe / MSI to a GitHub Release on every `v*` tag,
+# for both x86_64 and aarch64 Windows. Uses native runners per arch
+# (windows-latest = x64, windows-11-arm = arm64) so we don't have to
+# fight cross-compilation against the gnullvm toolchain.
+#
+# Manual trigger via workflow_dispatch is wired so a maintainer can
+# rerun the matrix without bumping a tag (handy for fixing a release
+# upload that failed mid-flight).
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0). Required when running manually.'
+        required: true
+        default: ''
+      publish:
+        description: 'Attach the installers to the release. Off: build and run the installed matrix only, which is how a change to this workflow is tried.'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write   # gh release upload needs this
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            rust_target: x86_64-pc-windows-gnullvm
+            llvm_mingw_archive: llvm-mingw-20260421-ucrt-x86_64.zip
+          - arch: arm64
+            runner: windows-11-arm
+            rust_target: aarch64-pc-windows-gnullvm
+            llvm_mingw_archive: llvm-mingw-20260421-ucrt-aarch64.zip
+    runs-on: ${{ matrix.runner }}
+    env:
+      LLVM_MINGW_VER: 20260421
+      # Pin -- bumping requires verifying winfsp-rs still builds cleanly
+      # against the toolchain. The same archives are what
+      # MartinStorsjo.LLVM-MinGW.UCRT installs via winget; we fetch
+      # them directly to avoid winget's interactive prompts.
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: check out sibling repos
+        # The same clone as ci.yml's and matrix.yml's, so the release is
+        # built against the pins CI tested. There are no submodules.
+        # chore publishes darwin and linux builds only, and `uname -s`
+        # under Git Bash reports MINGW64_NT-*, so there is nothing to
+        # install here. Cloning directly restates what `chore siblings`
+        # does — which is the duplication chores.yml exists to remove —
+        # so it reads the refs OUT OF chores.yml rather than hardcoding
+        # them, and the single declaration still holds.
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+          # URL as well as ref. The family is not all in one org, so
+          # reconstructing a URL from the repo name silently points at a
+          # repo that does not exist -- and git then prompts for
+          # credentials, so the run dies with "could not read Username",
+          # which reads as an auth problem rather than a wrong URL.
+          printf '%s\t%s\t%s\n' \
+            rust-fs-core       "$(pin FS_CORE_URL)" "$(pin FS_CORE_REF)" \
+            rust-fs-btrfs      "$(pin FS_BTRFS_URL)" "$(pin FS_BTRFS_REF)" \
+            winfsp-fs-skeleton "$(pin SKELETON_URL)" "$(pin SKELETON_REF)" \
+            winfsp-rs          "$(pin WINFSP_RS_URL)" "$(pin WINFSP_RS_REF)" \
+          | while IFS="$(printf '\t')" read -r name url ref; do
+              echo "cloning $name at $ref"
+              # init + fetch-by-ref, not clone. winfsp-rs is pinned to a
+              # bare commit that no published branch contains, so a
+              # plain clone does not have it and `--branch` cannot name
+              # it. Asking the server for the SHA directly does work.
+              git init --quiet "../$name"
+              git -C "../$name" remote add origin "$url"
+              git -C "../$name" fetch --quiet --depth 1 origin "$ref"
+              git -C "../$name" checkout --quiet FETCH_HEAD
+            done
+
+      # A tag the CHANGELOG does not describe stops here, before anything is
+      # built: the release's notes are that section (rust-fs-core#209).
+      - name: the CHANGELOG describes this version
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: antimatter-studios/agent-skills/.github/actions/changelog-notes@ed0b96812c5908478dcd84543debf4d5f8bf87e3
+        with:
+          tag: ${{ github.ref_name }}
+
+      - name: install Rust + gnullvm target
+        shell: pwsh
+        run: |
+          rustup install stable
+          rustup default stable
+          rustup target add ${{ matrix.rust_target }}
+          rustc --version
+
+      - name: install LLVM-MinGW (gnullvm toolchain, ${{ matrix.arch }})
+        shell: pwsh
+        run: |
+          # LLVM-MinGW provides the gnullvm runtime + sysroot. Its
+          # standalone GitHub-release zip does NOT ship libclang.dll
+          # (only clang.exe and friends), so libclang for bindgen is
+          # installed via a separate step below.
+          $url = "https://github.com/mstorsjo/llvm-mingw/releases/download/${{ env.LLVM_MINGW_VER }}/${{ matrix.llvm_mingw_archive }}"
+          $zip = "$env:RUNNER_TEMP\llvm-mingw.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:RUNNER_TEMP\llvm-mingw" -Force
+          $extracted = Get-ChildItem "$env:RUNNER_TEMP\llvm-mingw" -Directory | Select-Object -First 1
+          $bin = Join-Path $extracted.FullName 'bin'
+          "Adding $bin to PATH"
+          Add-Content -Path $env:GITHUB_PATH -Value $bin
+
+      - name: install LLVM (libclang for bindgen)
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          # Pin to LLVM 18 -- the last release with stable Windows
+          # ARM64 binaries on the action's manifest, and old enough to
+          # parse LLVM-MinGW's clang-22 sysroot headers without the
+          # AVX-512 self-compile errors a same-version libclang trips
+          # on. Action sets LIBCLANG_PATH for us.
+          version: '18.1'
+          directory: ${{ runner.temp }}/llvm
+
+      - name: install WinFsp (build-time headers + libs)
+        shell: pwsh
+        run: |
+          choco install winfsp --yes --no-progress
+          # WinFsp installs to "C:\Program Files (x86)\WinFsp\" on x64
+          # hosts and to "C:\Program Files\WinFsp\" on arm64; winfsp-rs
+          # auto-discovers via the registry.
+
+      - name: install WiX 7
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix
+          wix eula accept wix7
+          wix --version
+
+      - name: patch fsctl.h for x86 MSVC-compat _ReadWriteBarrier collision
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: |
+          # Background: clang's MSVC compatibility (auto-enabled by the
+          # winfsp-sys bindgen invocation's `--target=...-pc-windows-msvc`)
+          # predefines _ReadWriteBarrier as a 0-arg function-like macro
+          # via the included intrin.h. WinFsp's fsctl.h then
+          # forward-declares
+          #     void _ReadWriteBarrier(void);
+          # which the preprocessor mangles into `void ;` -- "variable
+          # has incomplete type 'void'", with a paired "too many
+          # arguments to function-like macro invocation" error.
+          # `-U_ReadWriteBarrier` doesn't help because intrin.h is
+          # included after our -U processes.
+          #
+          # Wrap each forward-decl in a #pragma push_macro / #undef /
+          # #pragma pop_macro so the macro is hidden at exactly the
+          # point we need to declare the function.
+          # arm64 hits a different code branch (__dmb intrinsic) so
+          # this patch is x86-only.
+          #
+          # We patch BOTH the vendored header (read when winfsp-sys is
+          # built without the `system` feature) AND the choco-installed
+          # system header at "C:\Program Files (x86)\WinFsp\inc\winfsp\
+          # fsctl.h" (read when `system` is on, which our Cargo.toml
+          # turns on for the .lib-via-lld-link path). Whichever
+          # winfsp-sys reads, it gets the patched version.
+          $needle = '    void _ReadWriteBarrier(void);'
+          $replacement = "#pragma push_macro(`"_ReadWriteBarrier`")`n#undef _ReadWriteBarrier`n    void _ReadWriteBarrier(void);`n#pragma pop_macro(`"_ReadWriteBarrier`")"
+          $files = @(
+            '../winfsp-rs/winfsp-sys/winfsp/inc/winfsp/fsctl.h',
+            'C:\Program Files (x86)\WinFsp\inc\winfsp\fsctl.h'
+          )
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) {
+              "Skipping (not found): $f"
+              continue
+            }
+            $content = Get-Content $f -Raw
+            $content = $content -replace [regex]::Escape($needle), $replacement
+            Set-Content -Path $f -Value $content -NoNewline
+            "Patched $f"
+            Select-String -Path $f -Pattern '_ReadWriteBarrier' | Select-Object LineNumber, Line | Format-Table -AutoSize
+          }
+
+      - name: cargo build --release --features mount,service
+        shell: pwsh
+        env:
+          # Defang AVX-512 intrinsic header compilation -- cross-version
+          # libclang/sysroot self-compiles can fail there. WinFsp's ABI
+          # doesn't reference any AVX-512 types so neutering the macros
+          # is safe.
+          BINDGEN_EXTRA_CLANG_ARGS: -D__AVX512F__=0 -D__AVX512BW__=0 -D__AVX512CD__=0 -D__AVX512DQ__=0 -D__AVX512VL__=0 -D__AVX512VBMI__=0 -D__AVX512VBMI2__=0
+        run: |
+          cargo build --release --features mount,service --target ${{ matrix.rust_target }}
+          $exe = "target\${{ matrix.rust_target }}\release\btrfs.exe"
+          if (-not (Test-Path $exe)) { throw "Build did not produce $exe" }
+          "Built $exe ($((Get-Item $exe).Length) bytes)"
+
+      - name: add WiX extensions + run installer/build.ps1
+        shell: pwsh
+        run: |
+          # Add the two extensions our .wxs files need. Doing this in
+          # the same step as build.ps1 because the global cache from a
+          # separate earlier step doesn't always persist to here on
+          # the windows-11-arm runner (WIX0144 "extension could not be
+          # found").
+          #
+          # `2>&1` so add failures show up in the job log; otherwise
+          # they vanish silently and we only see the WIX0144 from the
+          # eventual build call.
+          $ErrorActionPreference = 'Stop'
+          Write-Host "Adding WixToolset.Util.wixext..."
+          wix extension add -g WixToolset.Util.wixext 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "wix extension add Util failed: $LASTEXITCODE" }
+          Write-Host "Adding WixToolset.BootstrapperApplications.wixext..."
+          wix extension add -g WixToolset.BootstrapperApplications.wixext 2>&1
+          if ($LASTEXITCODE -ne 0) { throw "wix extension add BootstrapperApplications failed: $LASTEXITCODE" }
+          Write-Host "Listing registered extensions:"
+          wix extension list 2>&1
+          $exe = "target\${{ matrix.rust_target }}\release\btrfs.exe"
+          installer\build.ps1 -ExePath $exe -Arch ${{ matrix.arch }}
+
+      - name: upload Setup.exe + MSI as workflow artefacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: btrfs-win-driver-${{ matrix.arch }}
+          path: |
+            dist/btrfs-win-driver-*-${{ matrix.arch }}-Setup.exe
+            dist/btrfs-win-driver-*-${{ matrix.arch }}.msi
+          if-no-files-found: error
+
+      # Catches the winget License-Blocks-Install / Validation-Unattended-Failed
+      # categories before they become a PR rejection. Runs on every build (tag
+      # push or manual dispatch) so a broken bundle never reaches a release.
+      # Artefacts above are uploaded first so a failing run can still be
+      # downloaded for offline debugging.
+      - name: verify Setup.exe installs silently
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem "dist\btrfs-win-driver-*-${{ matrix.arch }}-Setup.exe" | Select-Object -First 1).FullName
+          if (-not $setup) { throw "No Setup.exe found in dist\" }
+          installer\verify-silent.ps1 -SetupPath $setup
+
+      - name: upload verify-silent log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-silent-log-${{ matrix.arch }}
+          path: dist/verify-silent.log
+          if-no-files-found: ignore
+
+  # THE INSTALLED MATRIX: the x64 installer this run built, installed
+  # silently, the whole matrix run against the btrfs.exe it installed, then
+  # uninstalled and checked gone. arm64 is built and installed by the build
+  # job above; a hosted arm64 runner has no WinFsp mount to run the matrix
+  # through yet.
+  installed-matrix:
+    name: matrix against the installed driver
+    needs: [build]
+    uses: ./.github/workflows/matrix.yml
+    with:
+      installer: btrfs-win-driver-x64
+
+  # Attached from here, after the installed run, and never from the build:
+  # a tag whose installed driver fails the matrix publishes nothing. The
+  # manual checklist goes with it, for the real-device check no runner can
+  # make.
+  attach:
+    name: attach the installers to the release
+    needs: [build, installed-matrix]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: rust-fs-core at the pinned ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() { sed -n "s/^  $1: *//p" chores.yml | tr -d '\r'; }
+          git clone --quiet --depth 1 --branch "$(pin FS_CORE_REF)" "$(pin FS_CORE_URL)" ../rust-fs-core
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: btrfs-win-driver-*
+          merge-multiple: true
+          path: dist
+      # The release body is this version's CHANGELOG section, from github-guard's
+      # changelog extraction through agent-skills' changelog-notes action.
+      - name: the release notes are this version's CHANGELOG section
+        uses: antimatter-studios/agent-skills/.github/actions/changelog-notes@ed0b96812c5908478dcd84543debf4d5f8bf87e3
+        with:
+          tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          output-file: ${{ runner.temp }}/release-notes.md
+      - name: create the release if it is absent, and upload every installer and the checklist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [ -n "$TAG" ] || { echo "::error::a manual run needs the tag input"; exit 1; }
+          ls -l dist
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release-notes.md"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$TAG" dist/*-Setup.exe dist/*.msi installer/RELEASE-CHECKLIST.md \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+  # WINGET, after the release holds the installers it will point at. The
+  # first version of a new package is submitted by hand; every later one
+  # from here, by wingetcreate, as a pull request from the fork the token
+  # can push to. Without WINGET_TOKEN, or before the package exists in
+  # winget-pkgs, the job says so and stops: a release is not failed for a
+  # submission nobody configured.
+  winget:
+    name: submit the new version to winget
+    needs: [attach]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+      PACKAGE: AntimatterStudios.btrfs-win-driver
+    steps:
+      - name: submit, or say why not
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WINGET_TOKEN) {
+            Write-Host "::notice::WINGET_TOKEN is not configured, so this version is not submitted to winget. A token that can push to the winget-pkgs fork, saved as the WINGET_TOKEN secret, makes every later release submit itself."
+            exit 0
+          }
+          $manifests = "https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/a/AntimatterStudios/btrfs-win-driver"
+          try {
+            Invoke-RestMethod $manifests -Headers @{ Authorization = "Bearer $env:WINGET_TOKEN" } | Out-Null
+          } catch {
+            Write-Host "::notice::$env:PACKAGE is not in winget-pkgs yet. The first version is submitted by hand (winget/ holds its manifests); every later version is submitted from here."
+            exit 0
+          }
+          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $base = "https://github.com/${{ github.repository }}/releases/download/v$version"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update $env:PACKAGE --version $version `
+            --urls "$base/btrfs-win-driver-$version-x64-Setup.exe|x64" "$base/btrfs-win-driver-$version-arm64-Setup.exe|arm64" `
+            --submit --token $env:WINGET_TOKEN
