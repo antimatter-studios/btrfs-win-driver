@@ -125,13 +125,10 @@ No release yet.
 
 ## Licence
 
-This repository's source is **MIT** ([LICENSE](LICENSE)), as is
-rust-fs-btrfs.
-
-The executable links winfsp-fs-skeleton in every build, and with
-`--features mount` the WinFsp Rust bindings
-([winfsp-rs](https://github.com/antimatter-studios/winfsp-rs)) too; both are
-**GPL-3.0**. MIT code may be combined into a GPL-3.0 work, so there is no
-conflict, but a built `btrfs.exe` is distributed under GPL-3.0 as a whole,
-which is why the installer shows the GPL. The MIT grant covers this
-repository's source, which can be reused on its own terms.
+GPL-3.0 ([LICENSE](LICENSE)), inherited from what the executable links:
+winfsp-fs-skeleton in every build and, with `--features mount`, the WinFsp
+Rust bindings ([winfsp-rs](https://github.com/antimatter-studios/winfsp-rs)),
+both GPL-3.0. The repository carries the licence of the program it builds,
+as ext4-win-driver, xfs-win-driver and erofs-win-driver do. rust-fs-btrfs,
+the driver library underneath, is a separate project under its own MIT
+licence.

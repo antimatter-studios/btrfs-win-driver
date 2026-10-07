@@ -5,6 +5,14 @@ written before it is tagged, and the GitHub release's notes are that section.
 
 ## [Unreleased]
 
+### Changed
+
+- **The repository is GPL-3.0, the licence of the program it builds.** It
+  was MIT, but the executable links winfsp-fs-skeleton and the WinFsp Rust
+  bindings, both GPL-3.0, so what users install is GPL-3.0; the LICENSE,
+  `Cargo.toml`, README and winget manifest now say so, as they do for the
+  ext4, xfs and erofs drivers.
+
 ### Added
 
 - **Btrfs volumes mount read-only on Windows through WinFsp.** `btrfs mount
