@@ -22,3 +22,16 @@ written before it is tagged, and the GitHub release's notes are that section.
   drivers.** A release is built for x64 and arm64, tested installed through
   the matrix before it is attached, and submitted to winget when a token is
   configured.
+- **`btrfs mount --rw` overwrites bytes of `nodatacow` files in place, and
+  nothing else.** A file the kernel marked `nodatacow` in the default
+  subvolume can be overwritten inside its current size through the mount;
+  every other file carries the read-only attribute, and opening one for
+  writing is refused at the open rather than by Windows' lazy writer after
+  the application was told it succeeded.
+- **`btrfs write` makes the same overwrite from the command line**, from
+  stdin at `--offset`, and prints rust-fs-btrfs's reason when it refuses.
+- **The in-place write is judged by `btrfs check` and the Linux kernel.**
+  `scripts/oracle-write.sh` writes into the fixture through the driver, then
+  checks the image and has the kernel read the file back; three Windows
+  matrix scenarios write through a `--rw` mount and refuse through a
+  read-only one.

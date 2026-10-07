@@ -1,6 +1,6 @@
 {
   "_format": "v2",
-  "_doc": "btrfs-win-driver matrix. Every scenario runs on btrfs-content.img, made by scripts/build-fixtures.sh: mkfs.btrfs -L WINTEST, then populated by the Linux kernel with the files its comments describe. Host-side scenarios read it with btrfs.exe; win-mount-* mount it read-only through WinFsp. Sizes and hashes are of the content that script writes.",
+  "_doc": "btrfs-win-driver matrix. Every scenario runs on btrfs-content.img, made by scripts/build-fixtures.sh: mkfs.btrfs -L WINTEST, then populated by the Linux kernel with the files its comments describe. Host-side scenarios read it with btrfs.exe; win-mount-* mount it read-only through WinFsp, and rw-* mount it with --rw and overwrite bytes in place through it. Sizes and hashes are of the content that script writes.",
   "scenarios": {
     "basic-info-volume": {
       "status": "pending",
@@ -33,12 +33,12 @@
         {
           "op": "verify-ls",
           "path": "/",
-          "expect_args": "'--expect-name' 'small.txt' '--expect-name' 'empty.txt' '--expect-name' 'pattern.bin' '--expect-name' 'dir' '--expect-name' 'manyentries' '--expect-name' 'link-to-small' '--expect-name' 'dangling-link' '--expect-name' 'naïve-café.txt' '--expect-name' 'compressed' '--expect-name' 'subvol' '--expect-name' 'snap'"
+          "expect_args": "'--expect-name' 'small.txt' '--expect-name' 'empty.txt' '--expect-name' 'pattern.bin' '--expect-name' 'dir' '--expect-name' 'manyentries' '--expect-name' 'link-to-small' '--expect-name' 'dangling-link' '--expect-name' 'naïve-café.txt' '--expect-name' 'compressed' '--expect-name' 'subvol' '--expect-name' 'snap' '--expect-name' 'nocow'"
         },
         {
           "op": "verify-ls",
           "path": "/",
-          "expect_args": "'--expect-count' '11'"
+          "expect_args": "'--expect-count' '12'"
         }
       ]
     },
@@ -243,8 +243,8 @@
         {
           "op": "win-ls-via-mount",
           "path": "/",
-          "expect_names_csv": ".,..,small.txt,empty.txt,pattern.bin,dir,manyentries,link-to-small,dangling-link,naïve-café.txt,compressed,subvol,snap",
-          "expect_count": "13",
+          "expect_names_csv": ".,..,small.txt,empty.txt,pattern.bin,dir,manyentries,link-to-small,dangling-link,naïve-café.txt,compressed,subvol,snap,nocow",
+          "expect_count": "14",
           "drive": "Z"
         }
       ]
@@ -364,6 +364,104 @@
           "expect_content": "__none__",
           "expect_size": "18",
           "expect_sha256": "c9dad3d81682bcee14ce5d87d946c9d9d343be239e0e1fe0c2f40065cf7588ff",
+          "drive": "Z"
+        }
+      ]
+    },
+    "rw-overwrite-nocow": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "Mounted with --rw, 32 bytes overwrite nocow/data.bin across a 64 KiB boundary, through the Windows cache and WinFsp's paging writes; mounted again read-only, the file is the pattern with exactly those bytes replaced. The hash is of that content.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-overwrite-via-mount",
+          "path": "/nocow/data.bin",
+          "offset": "65530",
+          "content": "written through WinFsp, in place",
+          "expect": "written",
+          "drive": "Z",
+          "extra": "--rw"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/nocow/data.bin",
+          "expect_content": "__none__",
+          "expect_size": "1048576",
+          "expect_sha256": "4c455944729590d1fcef3ab2dbc5cb7a283a360d1d8c0946206baddcf51020a9",
+          "drive": "Z"
+        }
+      ]
+    },
+    "rw-copy-on-write-file-refused": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "Mounted with --rw, opening pattern.bin (an ordinary copy-on-write file) for writing is refused when it is opened, not later by the lazy writer; mounted again, it is unchanged.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-overwrite-via-mount",
+          "path": "/pattern.bin",
+          "offset": "65530",
+          "content": "written through WinFsp, in place",
+          "expect": "refused",
+          "drive": "Z",
+          "extra": "--rw"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/pattern.bin",
+          "expect_content": "__none__",
+          "expect_size": "3145728",
+          "expect_sha256": "ccede7c5733fbd7c02c5595c4cb604eec44d92694f6416221807694bb00de2a9",
+          "drive": "Z"
+        }
+      ]
+    },
+    "ro-mount-refuses-writes": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "Mounted without --rw, even the nodatacow file is not opened for writing, and is unchanged afterwards.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-overwrite-via-mount",
+          "path": "/nocow/data.bin",
+          "offset": "65530",
+          "content": "written through WinFsp, in place",
+          "expect": "refused",
+          "drive": "Z"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/nocow/data.bin",
+          "expect_content": "__none__",
+          "expect_size": "1048576",
+          "expect_sha256": "82d2c958df6a38a76154b28789469c4a29920c47d8f839d5bb74315116324f33",
           "drive": "Z"
         }
       ]

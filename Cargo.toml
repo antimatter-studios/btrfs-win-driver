@@ -75,6 +75,10 @@ fixtures = []
 name = "mount_reads"
 required-features = ["fixtures"]
 
+[[test]]
+name = "write_in_place"
+required-features = ["fixtures"]
+
 [profile.release]
 lto = true
 codegen-units = 1

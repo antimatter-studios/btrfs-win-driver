@@ -23,9 +23,9 @@ set -euo pipefail
 OUT=${1:-.fixtures}
 IMG="$OUT/btrfs-content.img"
 
-for tool in mkfs.btrfs btrfs python3; do
+for tool in mkfs.btrfs btrfs python3 chattr lsattr; do
   command -v "$tool" >/dev/null || {
-    echo "build-fixtures.sh: $tool not found. Install btrfs-progs (Linux); this cannot run on macOS." >&2
+    echo "build-fixtures.sh: $tool not found. Install btrfs-progs and e2fsprogs (Linux); this cannot run on macOS." >&2
     exit 1
   }
 done
@@ -61,6 +61,26 @@ size = 3 * 1024 * 1024
 with open(sys.argv[1], "wb") as f:
     f.write(b"".join(i.to_bytes(8, "little") for i in range(size // 8)))
 PY
+
+# A nodatacow file: the one kind the driver overwrites in place. +C on the
+# directory, before anything is written into it, makes the kernel create
+# each file in it NODATACOW and NODATASUM; on a file that already holds data
+# the attribute does nothing. 1 MiB of the same position-dependent pattern,
+# so an overwrite that lands at the wrong offset, or disturbs a byte beside
+# it, shows. Checked with lsattr: a kernel that ignored +C would leave the
+# write tests with nothing to write.
+mkdir -p "$MNT/nocow"
+chattr +C "$MNT/nocow"
+python3 - "$MNT/nocow/data.bin" <<'PY'
+import sys
+size = 1024 * 1024
+with open(sys.argv[1], "wb") as f:
+    f.write(b"".join(i.to_bytes(8, "little") for i in range(size // 8)))
+PY
+lsattr "$MNT/nocow/data.bin" | awk '{print $1}' | grep -q C || {
+  echo "build-fixtures.sh: nocow/data.bin did not come out nodatacow" >&2
+  exit 1
+}
 
 # Nested directories, so path walking goes past one level.
 mkdir -p "$MNT/dir/nested/deep"

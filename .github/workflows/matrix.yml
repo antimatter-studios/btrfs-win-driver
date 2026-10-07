@@ -259,7 +259,7 @@ jobs:
 
       - name: every scenario executed
         shell: bash
-        run: bash scripts/matrix-floor.sh tmp/logs/matrix.log 17
+        run: bash scripts/matrix-floor.sh tmp/logs/matrix.log 20
 
       - name: uninstall it silently, and check nothing is left behind
         if: inputs.installer != ''
