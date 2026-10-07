@@ -1,0 +1,80 @@
+version: "3"
+chore_min_version: 0.6.0
+
+# EVERY DEPENDENCY IS A SIBLING HERE, INCLUDING THE THIRD-PARTY FORK.
+#
+# The manifest path-depends on ../rust-fs-core, ../rust-fs-btrfs,
+# ../winfsp-fs-skeleton and ../winfsp-rs, the layout xfs-win-driver uses.
+# `chore siblings` puts each at the ref pinned below; CI reads the same
+# pins out of this file rather than restating them, so there is one
+# declaration of what the driver builds against.
+
+vars:
+  # URL beside ref for each: a URL rebuilt from a repo name is wrong the
+  # moment a repository moves, and git answers a repo it cannot see with a
+  # credential prompt rather than a 404, so it fails as an auth error.
+  #
+  # rust-fs-btrfs 0.10.2 requires rust-fs-core ^0.3.7, so the two move
+  # together. The release job also runs rust-fs-core's scripts in place
+  # from this checkout, through agent-skills' changelog-notes action.
+  FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
+  FS_CORE_REF: v0.3.7
+  FS_BTRFS_URL: https://github.com/antimatter-studios/rust-fs-btrfs.git
+  FS_BTRFS_REF: v0.10.2
+  SKELETON_URL: https://github.com/antimatter-studios/winfsp-fs-skeleton.git
+  SKELETON_REF: v0.2.2
+  # The matrix runs through it, in CI as on a developer's Windows VM.
+  HARNESS_URL: https://github.com/antimatter-studios/fs-windows-test-harness.git
+  HARNESS_REF: v4.3.1
+  # Pinned to a commit, not a branch: the revision every sibling driver
+  # builds against. Upstream 0.13.0 declares the guard-strategy constant
+  # signed while bindgen emits it unsigned for the gnullvm target, so it
+  # does not compile there.
+  WINFSP_RS_URL: https://github.com/antimatter-studios/winfsp-rs.git
+  WINFSP_RS_REF: 59ab48bca2a67c95d4eba640343b6b80b87bb6ea
+
+tasks:
+  siblings:
+    desc: Check out the sibling repos this crate builds against, at their pinned refs
+    # Refuses to move a sibling with uncommitted work: a checkout is
+    # destructive, and a task that also runs in CI must not eat
+    # someone's afternoon when they run it locally.
+    cmds:
+      - |
+        set -eu
+        printf '%s\t%s\t%s\n' \
+          rust-fs-core       '{{.FS_CORE_URL}}'   '{{.FS_CORE_REF}}' \
+          rust-fs-btrfs      '{{.FS_BTRFS_URL}}'  '{{.FS_BTRFS_REF}}' \
+          winfsp-fs-skeleton '{{.SKELETON_URL}}'  '{{.SKELETON_REF}}' \
+          fs-windows-test-harness '{{.HARNESS_URL}}' '{{.HARNESS_REF}}' \
+          winfsp-rs          '{{.WINFSP_RS_URL}}' '{{.WINFSP_RS_REF}}' \
+        | while IFS="$(printf '\t')" read -r name url ref; do
+            dir="../$name"
+            if [ ! -d "$dir/.git" ] && [ ! -f "$dir/.git" ]; then
+              echo "siblings: cloning $name at $ref"
+              git clone --quiet "$url" "$dir"
+              git -C "$dir" checkout --quiet "$ref"
+              continue
+            fi
+            if [ -n "$(git -C "$dir" status --porcelain)" ]; then
+              echo "siblings: $name has uncommitted changes -- refusing to move it." >&2
+              exit 1
+            fi
+            git -C "$dir" fetch --quiet --tags origin
+            if [ "$(git -C "$dir" rev-parse HEAD)" = "$(git -C "$dir" rev-parse "$ref^{commit}")" ]; then
+              echo "siblings: $name already at $ref"
+              continue
+            fi
+            echo "siblings: moving $name to $ref"
+            git -C "$dir" checkout --quiet "$ref"
+          done
+
+  check:
+    desc: Type-check the parts that build off Windows
+    cmds:
+      - cargo check --locked --no-default-features
+
+  fixtures:
+    desc: Build the Btrfs images the tests and the matrix read (Linux, root, mkfs.btrfs)
+    cmds:
+      - sudo scripts/build-fixtures.sh .fixtures

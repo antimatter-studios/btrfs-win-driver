@@ -1,0 +1,11 @@
+[toolchain]
+# Pinned to the compiler the sibling Windows drivers use, so a clippy
+# lint added in a newer release cannot fire in CI and not locally (or the
+# reverse). This crate links nothing into a shared bundle -- it is a
+# Windows binary that compiles rust-fs-btrfs from source -- so it is free
+# to sit on a newer compiler than the fs-* readers' pin, and a
+# dependency's own rust-toolchain.toml is ignored anyway.
+#
+# Bump deliberately, after reading the new lint set.
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]

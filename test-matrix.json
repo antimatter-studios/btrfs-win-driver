@@ -1,0 +1,372 @@
+{
+  "_format": "v2",
+  "_doc": "btrfs-win-driver matrix. Every scenario runs on btrfs-content.img, made by scripts/build-fixtures.sh: mkfs.btrfs -L WINTEST, then populated by the Linux kernel with the files its comments describe. Host-side scenarios read it with btrfs.exe; win-mount-* mount it read-only through WinFsp. Sizes and hashes are of the content that script writes.",
+  "scenarios": {
+    "basic-info-volume": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "The superblock as the driver reads it: the label mkfs.btrfs was given and the image's size.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-info",
+          "expect_args": "'--expect-stdout-contains' 'label            \"WINTEST\"'"
+        },
+        {
+          "op": "verify-info",
+          "expect_args": "'--expect-stdout-contains' 'total bytes      314572800'"
+        }
+      ]
+    },
+    "ro-list-root": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "The root directory: every entry scripts/build-fixtures.sh made, and nothing else.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/",
+          "expect_args": "'--expect-name' 'small.txt' '--expect-name' 'empty.txt' '--expect-name' 'pattern.bin' '--expect-name' 'dir' '--expect-name' 'manyentries' '--expect-name' 'link-to-small' '--expect-name' 'dangling-link' '--expect-name' 'naïve-café.txt' '--expect-name' 'compressed' '--expect-name' 'subvol' '--expect-name' 'snap'"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/",
+          "expect_args": "'--expect-count' '11'"
+        }
+      ]
+    },
+    "ro-list-nested": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "Three levels down, through two directories.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/dir/nested/deep",
+          "expect_args": "'--expect-name' 'leaf.txt'"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/dir/nested/deep",
+          "expect_args": "'--expect-count' '1'"
+        }
+      ]
+    },
+    "ro-list-large-dir": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "200 entries: a directory index spanning more than one tree leaf.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/manyentries",
+          "expect_args": "'--expect-name' 'entry-1.txt' '--expect-name' 'entry-2.txt' '--expect-name' 'entry-3.txt' '--expect-name' 'entry-4.txt' '--expect-name' 'entry-5.txt' '--expect-name' 'entry-6.txt' '--expect-name' 'entry-7.txt' '--expect-name' 'entry-8.txt' '--expect-name' 'entry-9.txt' '--expect-name' 'entry-10.txt' '--expect-name' 'entry-11.txt' '--expect-name' 'entry-12.txt' '--expect-name' 'entry-13.txt' '--expect-name' 'entry-14.txt' '--expect-name' 'entry-15.txt' '--expect-name' 'entry-16.txt' '--expect-name' 'entry-17.txt' '--expect-name' 'entry-18.txt' '--expect-name' 'entry-19.txt' '--expect-name' 'entry-20.txt' '--expect-name' 'entry-21.txt' '--expect-name' 'entry-22.txt' '--expect-name' 'entry-23.txt' '--expect-name' 'entry-24.txt' '--expect-name' 'entry-25.txt' '--expect-name' 'entry-26.txt' '--expect-name' 'entry-27.txt' '--expect-name' 'entry-28.txt' '--expect-name' 'entry-29.txt' '--expect-name' 'entry-30.txt' '--expect-name' 'entry-31.txt' '--expect-name' 'entry-32.txt' '--expect-name' 'entry-33.txt' '--expect-name' 'entry-34.txt' '--expect-name' 'entry-35.txt' '--expect-name' 'entry-36.txt' '--expect-name' 'entry-37.txt' '--expect-name' 'entry-38.txt' '--expect-name' 'entry-39.txt' '--expect-name' 'entry-40.txt' '--expect-name' 'entry-41.txt' '--expect-name' 'entry-42.txt' '--expect-name' 'entry-43.txt' '--expect-name' 'entry-44.txt' '--expect-name' 'entry-45.txt' '--expect-name' 'entry-46.txt' '--expect-name' 'entry-47.txt' '--expect-name' 'entry-48.txt' '--expect-name' 'entry-49.txt' '--expect-name' 'entry-50.txt' '--expect-name' 'entry-51.txt' '--expect-name' 'entry-52.txt' '--expect-name' 'entry-53.txt' '--expect-name' 'entry-54.txt' '--expect-name' 'entry-55.txt' '--expect-name' 'entry-56.txt' '--expect-name' 'entry-57.txt' '--expect-name' 'entry-58.txt' '--expect-name' 'entry-59.txt' '--expect-name' 'entry-60.txt' '--expect-name' 'entry-61.txt' '--expect-name' 'entry-62.txt' '--expect-name' 'entry-63.txt' '--expect-name' 'entry-64.txt' '--expect-name' 'entry-65.txt' '--expect-name' 'entry-66.txt' '--expect-name' 'entry-67.txt' '--expect-name' 'entry-68.txt' '--expect-name' 'entry-69.txt' '--expect-name' 'entry-70.txt' '--expect-name' 'entry-71.txt' '--expect-name' 'entry-72.txt' '--expect-name' 'entry-73.txt' '--expect-name' 'entry-74.txt' '--expect-name' 'entry-75.txt' '--expect-name' 'entry-76.txt' '--expect-name' 'entry-77.txt' '--expect-name' 'entry-78.txt' '--expect-name' 'entry-79.txt' '--expect-name' 'entry-80.txt' '--expect-name' 'entry-81.txt' '--expect-name' 'entry-82.txt' '--expect-name' 'entry-83.txt' '--expect-name' 'entry-84.txt' '--expect-name' 'entry-85.txt' '--expect-name' 'entry-86.txt' '--expect-name' 'entry-87.txt' '--expect-name' 'entry-88.txt' '--expect-name' 'entry-89.txt' '--expect-name' 'entry-90.txt' '--expect-name' 'entry-91.txt' '--expect-name' 'entry-92.txt' '--expect-name' 'entry-93.txt' '--expect-name' 'entry-94.txt' '--expect-name' 'entry-95.txt' '--expect-name' 'entry-96.txt' '--expect-name' 'entry-97.txt' '--expect-name' 'entry-98.txt' '--expect-name' 'entry-99.txt' '--expect-name' 'entry-100.txt' '--expect-name' 'entry-101.txt' '--expect-name' 'entry-102.txt' '--expect-name' 'entry-103.txt' '--expect-name' 'entry-104.txt' '--expect-name' 'entry-105.txt' '--expect-name' 'entry-106.txt' '--expect-name' 'entry-107.txt' '--expect-name' 'entry-108.txt' '--expect-name' 'entry-109.txt' '--expect-name' 'entry-110.txt' '--expect-name' 'entry-111.txt' '--expect-name' 'entry-112.txt' '--expect-name' 'entry-113.txt' '--expect-name' 'entry-114.txt' '--expect-name' 'entry-115.txt' '--expect-name' 'entry-116.txt' '--expect-name' 'entry-117.txt' '--expect-name' 'entry-118.txt' '--expect-name' 'entry-119.txt' '--expect-name' 'entry-120.txt' '--expect-name' 'entry-121.txt' '--expect-name' 'entry-122.txt' '--expect-name' 'entry-123.txt' '--expect-name' 'entry-124.txt' '--expect-name' 'entry-125.txt' '--expect-name' 'entry-126.txt' '--expect-name' 'entry-127.txt' '--expect-name' 'entry-128.txt' '--expect-name' 'entry-129.txt' '--expect-name' 'entry-130.txt' '--expect-name' 'entry-131.txt' '--expect-name' 'entry-132.txt' '--expect-name' 'entry-133.txt' '--expect-name' 'entry-134.txt' '--expect-name' 'entry-135.txt' '--expect-name' 'entry-136.txt' '--expect-name' 'entry-137.txt' '--expect-name' 'entry-138.txt' '--expect-name' 'entry-139.txt' '--expect-name' 'entry-140.txt' '--expect-name' 'entry-141.txt' '--expect-name' 'entry-142.txt' '--expect-name' 'entry-143.txt' '--expect-name' 'entry-144.txt' '--expect-name' 'entry-145.txt' '--expect-name' 'entry-146.txt' '--expect-name' 'entry-147.txt' '--expect-name' 'entry-148.txt' '--expect-name' 'entry-149.txt' '--expect-name' 'entry-150.txt' '--expect-name' 'entry-151.txt' '--expect-name' 'entry-152.txt' '--expect-name' 'entry-153.txt' '--expect-name' 'entry-154.txt' '--expect-name' 'entry-155.txt' '--expect-name' 'entry-156.txt' '--expect-name' 'entry-157.txt' '--expect-name' 'entry-158.txt' '--expect-name' 'entry-159.txt' '--expect-name' 'entry-160.txt' '--expect-name' 'entry-161.txt' '--expect-name' 'entry-162.txt' '--expect-name' 'entry-163.txt' '--expect-name' 'entry-164.txt' '--expect-name' 'entry-165.txt' '--expect-name' 'entry-166.txt' '--expect-name' 'entry-167.txt' '--expect-name' 'entry-168.txt' '--expect-name' 'entry-169.txt' '--expect-name' 'entry-170.txt' '--expect-name' 'entry-171.txt' '--expect-name' 'entry-172.txt' '--expect-name' 'entry-173.txt' '--expect-name' 'entry-174.txt' '--expect-name' 'entry-175.txt' '--expect-name' 'entry-176.txt' '--expect-name' 'entry-177.txt' '--expect-name' 'entry-178.txt' '--expect-name' 'entry-179.txt' '--expect-name' 'entry-180.txt' '--expect-name' 'entry-181.txt' '--expect-name' 'entry-182.txt' '--expect-name' 'entry-183.txt' '--expect-name' 'entry-184.txt' '--expect-name' 'entry-185.txt' '--expect-name' 'entry-186.txt' '--expect-name' 'entry-187.txt' '--expect-name' 'entry-188.txt' '--expect-name' 'entry-189.txt' '--expect-name' 'entry-190.txt' '--expect-name' 'entry-191.txt' '--expect-name' 'entry-192.txt' '--expect-name' 'entry-193.txt' '--expect-name' 'entry-194.txt' '--expect-name' 'entry-195.txt' '--expect-name' 'entry-196.txt' '--expect-name' 'entry-197.txt' '--expect-name' 'entry-198.txt' '--expect-name' 'entry-199.txt' '--expect-name' 'entry-200.txt'"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/manyentries",
+          "expect_args": "'--expect-count' '200'"
+        }
+      ]
+    },
+    "ro-list-subvolume": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A subvolume and a read-only snapshot of it, each a directory entry naming another tree, crossed into.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/subvol",
+          "expect_args": "'--expect-name' 'inside.txt'"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/snap",
+          "expect_args": "'--expect-name' 'inside.txt'"
+        },
+        {
+          "op": "verify-ls",
+          "path": "/snap",
+          "expect_args": "'--expect-count' '1'"
+        }
+      ]
+    },
+    "ro-cat-small-inline": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A file small enough to be stored inline in its extent item.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/small.txt",
+          "expect_args": "'--expect-size' '11' '--expect-sha256' '1b631232c4e7ee78cbbe11b8cdafc4e230e32fed112dc4e4bb56502ec9526031'"
+        }
+      ]
+    },
+    "ro-cat-empty": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "An empty file reads as zero bytes, not an error.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/empty.txt",
+          "expect_args": "'--expect-size' '0' '--expect-sha256' 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'"
+        }
+      ]
+    },
+    "ro-cat-pattern": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "3 MiB whose every 8 bytes are their own offset: a read from the wrong offset fails the hash.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/pattern.bin",
+          "expect_args": "'--expect-size' '3145728' '--expect-sha256' 'ccede7c5733fbd7c02c5595c4cb604eec44d92694f6416221807694bb00de2a9'"
+        }
+      ]
+    },
+    "ro-cat-deep": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A file three directories down, and one a level down.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/dir/nested/deep/leaf.txt",
+          "expect_args": "'--expect-size' '11' '--expect-sha256' '1b7aee36587df6807fcd1d5efd8118b08dfe7e7ce5e8840c227e34924d766a78'"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/dir/one.txt",
+          "expect_args": "'--expect-size' '9' '--expect-sha256' 'aa0ba8f8ddb4833e9574c2eba399f7491d1f5b554b624a986cd4179a40034e39'"
+        }
+      ]
+    },
+    "ro-cat-compressed": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "The same text written through zlib, lzo and zstd compression by the kernel; each decoder must reproduce it.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/compressed/zlib.txt",
+          "expect_args": "'--expect-size' '1769472' '--expect-sha256' '6d9bc8ea49d5021994a4a8a2bd150ee470187a6a05dd281a80363fee1e19f769'"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/compressed/lzo.txt",
+          "expect_args": "'--expect-size' '1769472' '--expect-sha256' '6d9bc8ea49d5021994a4a8a2bd150ee470187a6a05dd281a80363fee1e19f769'"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/compressed/zstd.txt",
+          "expect_args": "'--expect-size' '1769472' '--expect-sha256' '6d9bc8ea49d5021994a4a8a2bd150ee470187a6a05dd281a80363fee1e19f769'"
+        }
+      ]
+    },
+    "ro-cat-subvolume": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A file inside a subvolume and inside its snapshot.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/subvol/inside.txt",
+          "expect_args": "'--expect-size' '18' '--expect-sha256' 'c9dad3d81682bcee14ce5d87d946c9d9d343be239e0e1fe0c2f40065cf7588ff'"
+        },
+        {
+          "op": "verify-cat",
+          "path": "/snap/inside.txt",
+          "expect_args": "'--expect-size' '18' '--expect-sha256' 'c9dad3d81682bcee14ce5d87d946c9d9d343be239e0e1fe0c2f40065cf7588ff'"
+        }
+      ]
+    },
+    "win-mount-ls-root": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "The root directory through a read-only WinFsp mount, as Explorer lists it.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-ls-via-mount",
+          "path": "/",
+          "expect_names_csv": ".,..,small.txt,empty.txt,pattern.bin,dir,manyentries,link-to-small,dangling-link,naïve-café.txt,compressed,subvol,snap",
+          "expect_count": "13",
+          "drive": "Z"
+        }
+      ]
+    },
+    "win-mount-ls-subvolume": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A subvolume's contents through the mount.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-ls-via-mount",
+          "path": "/subvol",
+          "expect_names_csv": ".,..,inside.txt",
+          "expect_count": "3",
+          "drive": "Z"
+        }
+      ]
+    },
+    "win-mount-cat-small": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "An inline file's bytes through the mount.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/small.txt",
+          "expect_content": "__none__",
+          "expect_size": "11",
+          "expect_sha256": "1b631232c4e7ee78cbbe11b8cdafc4e230e32fed112dc4e4bb56502ec9526031",
+          "drive": "Z"
+        }
+      ]
+    },
+    "win-mount-cat-pattern": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "The 3 MiB pattern through the mount: ranged reads by the Windows cache manager, checked by hash.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/pattern.bin",
+          "expect_content": "__none__",
+          "expect_size": "3145728",
+          "expect_sha256": "ccede7c5733fbd7c02c5595c4cb604eec44d92694f6416221807694bb00de2a9",
+          "drive": "Z"
+        }
+      ]
+    },
+    "win-mount-cat-compressed": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A zstd-compressed file through the mount.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/compressed/zstd.txt",
+          "expect_content": "__none__",
+          "expect_size": "1769472",
+          "expect_sha256": "6d9bc8ea49d5021994a4a8a2bd150ee470187a6a05dd281a80363fee1e19f769",
+          "drive": "Z"
+        }
+      ]
+    },
+    "win-mount-cat-snapshot": {
+      "status": "pending",
+      "image": "btrfs-content.img",
+      "_attempts": [],
+      "_notes": "A file inside a read-only snapshot through the mount.",
+      "recipe": [
+        {
+          "op": "build-btrfs-image"
+        },
+        {
+          "op": "ship-to-vm",
+          "src": "{image_dir}/{run_id}/btrfs-content.img",
+          "dest": "{vm.workdir}/btrfs-content.img"
+        },
+        {
+          "op": "win-cat-via-mount",
+          "path": "/snap/inside.txt",
+          "expect_content": "__none__",
+          "expect_size": "18",
+          "expect_sha256": "c9dad3d81682bcee14ce5d87d946c9d9d343be239e0e1fe0c2f40065cf7588ff",
+          "drive": "Z"
+        }
+      ]
+    }
+  }
+}

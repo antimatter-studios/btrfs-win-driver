@@ -1,0 +1,87 @@
+[package]
+name = "btrfs-win-driver"
+version = "0.1.0"
+edition = "2021"
+# This crate's own source is MIT (LICENSE). The executable links
+# `winfsp-fs-skeleton` always and, with `mount`, the WinFsp Rust bindings
+# (`winfsp`, `winfsp-sys`), all GPL-3.0, so a built binary is distributed
+# under GPL-3.0 as a whole. MIT code flows into a GPL-3.0 work, so the two
+# do not conflict; the README's Licence section states the distinction.
+license = "MIT"
+description = "Read-only Btrfs driver for Windows, in user mode, built on WinFsp."
+repository = "https://github.com/antimatter-studios/btrfs-win-driver"
+
+[[bin]]
+name = "btrfs"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+# winfsp-fs-skeleton owns the SCM dispatcher, disk-arrival event pump,
+# partition walker, raw-device I/O with sector alignment, and drive-
+# letter selection. We supply only the Btrfs-specific superblock-magic
+# detect via the FsBackend trait. The skeleton has cross-platform stubs
+# for non-windows hosts so it stays in [dependencies], not the
+# windows-only block.
+winfsp-fs-skeleton = { path = "../winfsp-fs-skeleton", default-features = false }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.7" }
+rust-fs-btrfs = { path = "../rust-fs-btrfs", version = "0.10.2" }
+# The WinFsp `mount` path waits for Ctrl-C with it. Cheap and
+# cross-platform, so it is not gated.
+ctrlc = "3"
+
+[target.'cfg(windows)'.dependencies]
+# WinFsp + helpers. Optional + Windows-target-only -- pulled in when the
+# `mount` feature is enabled AND the build target is Windows. On macOS
+# and Linux the `mount` feature does nothing (the cfg-gated module is
+# empty).
+#
+# Path-depended on the antimatter-studios fork of winfsp-rs, a sibling
+# checkout pinned in chores.yml, until its gnullvm-support change lands
+# upstream: it lifts winfsp-sys/build.rs's MSVC-only gate so the same
+# MSVC-format .lib (consumed via lld-link) works for
+# *-pc-windows-gnullvm Rust toolchains too.
+winfsp = { path = "../winfsp-rs/winfsp", features = ["delayload", "system"], optional = true, default-features = false }
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+], optional = true }
+winfsp-sys = { path = "../winfsp-rs/winfsp-sys", optional = true }
+widestring = { version = "1", optional = true }
+
+[target.'cfg(windows)'.build-dependencies]
+# Only used when the `mount` feature is on; build.rs guards the call.
+# `delayload` implies the `build` feature in winfsp's Cargo.toml.
+winfsp = { path = "../winfsp-rs/winfsp", features = ["delayload"], default-features = false }
+
+[features]
+default = []
+# Enables the `mount` subcommand (WinFsp driver). Active only on Windows
+# -- on other targets the deps don't resolve and the cfg-gated code is
+# absent.
+mount = ["dep:winfsp", "dep:winfsp-sys", "dep:windows", "dep:widestring"]
+# Enables the `service` subcommand (Windows Service variant of the
+# auto-mount watcher). Forwards to winfsp-fs-skeleton's `service`
+# feature, which pulls in `windows-service` for the SCM dispatcher.
+service = ["winfsp-fs-skeleton/service"]
+# Builds tests/mount_reads.rs, which reads the Btrfs image
+# scripts/build-fixtures.sh makes (Linux, root, mkfs.btrfs). Off by default
+# so a plain `cargo test` does not build a suite that cannot run here;
+# CI's fixtures job turns it on after building the image.
+fixtures = []
+
+[[test]]
+name = "mount_reads"
+required-features = ["fixtures"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+# panic = "abort" is the right semantics for a binary that runs as a
+# Windows Service: no human is around to read a panic message. (The
+# `libunwind.dll` runtime dependency that breaks SCM-launched session-0
+# binaries is dropped separately via .cargo/config.toml's `+crt-static`
+# for the gnullvm targets.)
+panic = "abort"

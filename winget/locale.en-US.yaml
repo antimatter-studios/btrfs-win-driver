@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: AntimatterStudios.btrfs-win-driver
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Antimatter Studios
+PublisherUrl: https://github.com/antimatter-studios
+PublisherSupportUrl: https://github.com/antimatter-studios/btrfs-win-driver/issues
+PackageName: btrfs-win-driver
+PackageUrl: https://github.com/antimatter-studios/btrfs-win-driver
+License: GPL-3.0-only (the executable links the GPL-3.0 WinFsp Rust bindings; the driver's own source is MIT)
+LicenseUrl: https://github.com/antimatter-studios/btrfs-win-driver/blob/main/README.md#licence
+ShortDescription: Mount and read Btrfs volumes on Windows, in user mode, via WinFsp.
+Description: |
+  btrfs-win-driver mounts Btrfs volumes read-only as Windows drive
+  letters through WinFsp. It runs in user mode: a fault takes down the
+  mount, not Windows. Subvolumes and snapshots, compressed files (zlib,
+  lzo, zstd) and every checksum type are read.
+
+  Setup.exe chains the WinFsp redistributable so end users only run one
+  installer. The installer also adds a "Mount as btrfs" right-click verb
+  on .img files, and a CLI for browsing without mounting (info, ls, cat).
+Tags:
+  - btrfs
+  - filesystem
+  - mount
+  - winfsp
+  - linux
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
