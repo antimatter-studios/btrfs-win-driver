@@ -257,7 +257,9 @@ jobs:
 
       - name: install WinFsp (build-time headers + libs)
         shell: pwsh
-        run: choco install winfsp --yes --no-progress
+        run: |
+          # Retries a feed error and fails unless the headers are there (#4).
+          ./scripts/install-winfsp.ps1
 
       - name: patch fsctl.h for the _ReadWriteBarrier collision
         shell: pwsh

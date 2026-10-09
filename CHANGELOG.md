@@ -5,6 +5,14 @@ written before it is tagged, and the GitHub release's notes are that section.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A failed WinFsp install fails its own step.** When the Chocolatey feed
+  could not serve WinFsp, `choco install` passed having installed nothing and
+  the build failed later in winfsp-sys. Every workflow now installs through
+  `scripts/install-winfsp.ps1`, which retries and then checks the headers are
+  on disk (#4).
+
 ### Changed
 
 - **The repository is GPL-3.0-or-later, the licence of the program it builds.** It
