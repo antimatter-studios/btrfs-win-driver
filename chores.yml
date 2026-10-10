@@ -18,7 +18,7 @@ vars:
   # together. The release job also runs rust-fs-core's scripts in place
   # from this checkout, through agent-skills' changelog-notes action.
   FS_CORE_URL: https://github.com/antimatter-studios/rust-fs-core.git
-  FS_CORE_REF: v0.3.7
+  FS_CORE_REF: v0.3.8
   FS_BTRFS_URL: https://github.com/antimatter-studios/rust-fs-btrfs.git
   FS_BTRFS_REF: v0.10.2
   SKELETON_URL: https://github.com/antimatter-studios/winfsp-fs-skeleton.git
