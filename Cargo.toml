@@ -25,7 +25,7 @@ clap = { version = "4", features = ["derive"] }
 # for non-windows hosts so it stays in [dependencies], not the
 # windows-only block.
 winfsp-fs-skeleton = { path = "../winfsp-fs-skeleton", default-features = false }
-rust-fs-core = { path = "../rust-fs-core", version = "0.3.7" }
+rust-fs-core = { path = "../rust-fs-core", version = "0.3.8" }
 rust-fs-btrfs = { path = "../rust-fs-btrfs", version = "0.10.2" }
 # The WinFsp `mount` path waits for Ctrl-C with it. Cheap and
 # cross-platform, so it is not gated.
