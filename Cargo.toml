@@ -38,10 +38,10 @@ ctrlc = "3"
 # empty).
 #
 # Path-depended on the antimatter-studios fork of winfsp-rs, a sibling
-# checkout pinned in chores.yml, until its gnullvm-support change lands
-# upstream: it lifts winfsp-sys/build.rs's MSVC-only gate so the same
-# MSVC-format .lib (consumed via lld-link) works for
-# *-pc-windows-gnullvm Rust toolchains too.
+# checkout pinned in chores.yml, until its guard-strategy
+# fix lands upstream. Upstream took the gnullvm support itself in
+# 0.13.0; the fork is upstream's release plus one fix that lets the
+# guard-strategy constants compile for *-pc-windows-gnullvm.
 winfsp = { path = "../winfsp-rs/winfsp", features = ["delayload", "system"], optional = true, default-features = false }
 windows = { version = "0.61", features = [
     "Win32_Foundation",
