@@ -27,11 +27,11 @@ vars:
   HARNESS_URL: https://github.com/antimatter-studios/fs-windows-test-harness.git
   HARNESS_REF: v4.3.1
   # Pinned to a commit, not a branch: the revision every sibling driver
-  # builds against. Upstream 0.13.0 declares the guard-strategy constant
+  # builds against. Upstream 0.13.1 still declares the guard-strategy constant
   # signed while bindgen emits it unsigned for the gnullvm target, so it
   # does not compile there.
   WINFSP_RS_URL: https://github.com/antimatter-studios/winfsp-rs.git
-  WINFSP_RS_REF: 59ab48bca2a67c95d4eba640343b6b80b87bb6ea
+  WINFSP_RS_REF: 0e94163771bcfd3ec1265d3ab35eb2a871136940
 
 tasks:
   siblings:
