@@ -26,12 +26,12 @@ vars:
   # The matrix runs through it, in CI as on a developer's Windows VM.
   HARNESS_URL: https://github.com/antimatter-studios/fs-windows-test-harness.git
   HARNESS_REF: v4.3.1
-  # Pinned to a commit, not a branch: the revision every sibling driver
-  # builds against. Upstream 0.13.1 still declares the guard-strategy constant
-  # signed while bindgen emits it unsigned for the gnullvm target, so it
-  # does not compile there.
+  # Pinned to a COMMIT, not a branch: upstream's 0.13.2, which our fork
+  # now matches. It holds the gnullvm guard-strategy fix, and stops set_name
+  # writing a NUL into directory entries, which made Explorer list a directory
+  # for ever.
   WINFSP_RS_URL: https://github.com/antimatter-studios/winfsp-rs.git
-  WINFSP_RS_REF: 0e94163771bcfd3ec1265d3ab35eb2a871136940
+  WINFSP_RS_REF: 0cdd86a6f1ecd38c89da6ccf3fe2fc3312e11d8f
 
 tasks:
   siblings:
